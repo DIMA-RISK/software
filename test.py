@@ -5,14 +5,26 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-TABLE_NAME = os.getenv("TABLE_NAME", "JOB_QUEUE_TABLE")
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_SSLMODE = os.getenv("DB_SSLMODE", "require")
+TABLE_NAME = os.getenv("TABLE_NAME")
 
-if not DATABASE_URL:
-    raise Exception("DATABASE_URL missing")
+if not TABLE_NAME:
+    raise Exception("TABLE_NAME missing in .env")
 
 def get_connection():
-    return psycopg.connect(DATABASE_URL)
+    return psycopg.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        sslmode=DB_SSLMODE,
+    )
 
 def claim_job(conn):
     sql = f"""
@@ -34,8 +46,8 @@ def claim_job(conn):
     with conn.cursor() as cur:
         cur.execute(sql)
         row = cur.fetchone()
-    conn.commit()
 
+    conn.commit()
     return row
 
 def mark_done(conn, row_id):
@@ -44,13 +56,14 @@ def mark_done(conn, row_id):
     SET status = 'done'
     WHERE id = %s
     """
+
     with conn.cursor() as cur:
         cur.execute(sql, (row_id,))
+
     conn.commit()
 
 def main():
     print("Connecting to DB...")
-
     conn = get_connection()
     print("Connected ✅")
 
@@ -58,18 +71,17 @@ def main():
 
     if not job:
         print("No queued jobs found")
+        conn.close()
         return
 
     row_id, job_id, org_uid = job
-
     print(f"Claimed job: row_id={row_id}, job_id={job_id}, org_uid={org_uid}")
+    print("Status changed to running")
 
-    print("Simulating work...")
     time.sleep(2)
 
     mark_done(conn, row_id)
-
-    print(f"Job {row_id} marked as DONE ✅")
+    print("Status changed to done ✅")
 
     conn.close()
 
