@@ -31,7 +31,7 @@ WORKER_ID = os.getenv("WORKER_ID", socket.gethostname())
 SOFTWARE_DIR = os.getenv("SOFTWARE_DIR", "./software")
 SOFTWARE_SCRIPT = os.getenv(
     "SOFTWARE_SCRIPT",
-    "ewnaf_v36_6_polished_gold_best_effort.sh",
+    "ewnaf_v38.1_enterprise.sh",
 )
 BASE_OUTPUT_DIR = os.getenv("BASE_OUTPUT_DIR", "/tmp/ewnaf_jobs")
 
