@@ -1,433 +1,12 @@
 #!/usr/bin/env bash
-# ================================================================================
-#  EWNAF v36.6-radar-reset — Enterprise Network Audit Framework
-#  Heuristic Network Audit | Bash 4.4+ | Final candidate build
-#
-#  METODOLOGIA: RESIDUAL RISK = RAW_RISK - VERIFIED_MITIGATIONS
-#  FAZA X:      Exploratory loop — sense → move → react → adapt → map
-#
-#  POLITYKA: Brak exploitów | Brak brute force | Read-only reconnaissance
-#
-# ── CHANGELOG v26.0.1 ──────────────────────────────────────────────────────────
-#
-#  BUGFIXES:
-#
-#  [FIX-001] _fw_collect_samples
-#            `local -a samples=() i d` — i i d były tablicami, nie skalarami.
-#            POPRAWKA: `local -a samples=()` + `local i d`
-#
-#  [FIX-002] _tcp_samples_median
-#            Analogiczny wzorzec jak FIX-001.
-#            POPRAWKA: `local -a vals=()` + `local i d`
-#
-#  [FIX-003] _sched_adaptive_jitter
-#            `base="${SESSION_STATE[...]}"` bez fallback → division by zero.
-#            POPRAWKA: `:-300` + guard `(( base < 2 )) && base=2`
-#
-#  [FIX-004] g_host_detect
-#            `p` i `state` bez `local` — wyciek do globalnej przestrzeni.
-#            POPRAWKA: `local p state` na początku funkcji.
-#
-#  DEAD CODE (zidentyfikowany, bez zmian logiki):
-#
-#  [NOTE-001] filter_false_ports() / _is_fake_port() / _port_fingerprint()
-#             Nie wywoływane. is_mirage_port() to stub (return 1). Do v26.1+.
-#
-#  [NOTE-002] g_host_detect() / g_dns_classify() / g_visibility_score()
-#             Dead code w bloku Gandalf. g_tcp_probe() aktywna (Faza X).
-#
-# ── CHANGELOG v26.3.2 ──────────────────────────────────────────────────────────
-#
-#  [BUGFIX-001] readonly CW/CC/CD/CM/CG/CR/CN/CBOLD conflict w print_summary()
-#               Zmienne są globalne readonly (line 426-428). print_summary()
-#               próbowała je zadeklarować jako local — błąd "readonly variable".
-#               Fix: usunięto local declaration, funkcja używa globals bezpośrednio.
-#
-#  [BUGFIX-002] DNS_VERSION_DISCLOSURE: "not disclosed"; }; w named.conf
-#               Tekst rekomendacji zawierał "; };" co bash interpretował jako
-#               koniec instrukcji w arithmetic expansion.
-#               Fix: zamieniono "not disclosed" na 'none' (równoważna dyrektywa BIND).
-#
-#  [BUGFIX-003] Wieloliniowe subshell w heredoc HTMLEOF (sekcja s1d KPI)
-#               Pre-computed variables zamiast $() wewnątrz attribute="".
-#
-#  [BUGFIX-004] $(echo $zc) w echo string — niepotrzebny subshell
-#               Fix: zamieniono $(echo $zc) na ${zc} bezpośrednio.
-#
-# ── CHANGELOG v26.3.1 ──────────────────────────────────────────────────────────
-#
-#  [MOD-008] Faza X — warstwa interpretacji actionable findings
-#             export_phase_x_findings() rozszerzone o konkretne rekomendacje
-#             per zone type:
-#
-#             DECEPTION: rozróżnia honeypot / tarpit / fake listener / SSH tarpit
-#                        z dedykowaną rekomendacją dla każdego podtypu
-#
-#             CORRELATED: rozróżnia NDR enterprise (behavioural analytics stack, score≥70%)
-#                         vs IDS z korelacją (telemetry correlation stack, score 50-70%)
-#                         Rekomendacja: uzgodnij okno audytu z SOC, whitelist IP
-#
-#             ADAPTIVE: rozróżnia persistent blacklist (STILL_ELEVATED recovery)
-#                       vs short ban-time. Konkretna rekomendacja ban-time.
-#
-#             ESCALATING: interpretuje window_type (THRESHOLD/GRADUAL/BURSTY)
-#                         Dla THRESHOLD: podaje N progu i ocenia agresywność
-#                         N≤3: BARDZO AGRESYWNY — zablokuje Qualys/Tenable
-#                         N≤7: AGRESYWNY — wyklucz skanery autoryzowane
-#                         N>7: UMIARKOWANY — rozważ obniżenie
-#
-#             REACTIVE: rozróżnia wysoka latencja bazowa (proxy/IDS inline)
-#                       vs normalna. Rekomendacja: fail2ban + CrowdSec minimum.
-#
-#             EXPOSED: konkretny action plan: fail2ban + iptables limit + CrowdSec
-#
-#             SILENT: potwierdzenie DROP policy jako prawidłowego zachowania
-#
-#             Globalna synteza:
-#             - Próg blokady siecowy z oceną agresywności
-#             - IDS/NDR identification (score-based)
-#             - Ocena dojrzałości posture (DOJRZAŁA / ŚREDNIA / NISKA)
-#             - Heat level warning przy heat≥70
-#
-#  [MOD-008b] Faza X HTML section (s1d)
-#             Nowa sekcja raportu z:
-#             - KPI grid (heat, threat, correlation, zones)
-#             - Tabela per-host zones z interpretacją
-#             - Per-host score bars (reactivity/adaptivity/deception/correlation)
-#             - Szczegółowe dane: baseline, window_type, ban_n, recovery
-#             - Legenda 7 stref z opisami
-#
-# ── CHANGELOG v26.3.0 ──────────────────────────────────────────────────────────
-#
-#  ENTERPRISE VISIBILITY & REPORTING — siedem nowych modułów
-#
-#  [MOD-001] CVSS v3.1 scoring per finding
-#             Funkcja cvss_for_finding() mapuje kategorie na typowe base scores
-#             z NIST NVD. add_finding() dostaje 6-ty parametr cvss (auto-calc).
-#             HTML raport wyświetla kolorowe badge CVSS obok każdego findingu.
-#
-#  [MOD-002] UDP service detection — audit_udp()
-#             DNS/53 (version disclosure, open resolver), NTP/123 (monlist/amplif.),
-#             SNMP/161 (community string probe bez snmpwalk), NetBIOS/137,
-#             mDNS/5353, SSDP/1900 (UPnP device disclosure), TFTP/69.
-#             Dodano nmblookup/snmpwalk/ldapsearch/rpcclient/smbclient do preflight.
-#
-#  [MOD-003] TLS/cert audit per host — audit_tls()
-#             Per każdy host z portem TLS (443/8443/8006/636/993/995/587/465):
-#             - Expiry: wygasły / ≤14 dni / ≤30 dni
-#             - Self-signed (issuer CN == subject CN)
-#             - Słaby algorytm podpisu (SHA1/MD5)
-#             - Przestarzały protokół (SSLv2/3/TLS1.0/1.1)
-#             - Słaby cipher suite (RC4/DES/3DES/NULL)
-#             - SAN mismatch (IP nie w SAN/CN)
-#
-#  [MOD-004] Active Directory / Kerberos detection — audit_ad()
-#             Kerberos/88 AS-REQ probe, LDAP/389 anonymous rootDSE bind,
-#             LDAPS/636 cert check, SMB signing detection (NTLM relay risk),
-#             Global Catalog/3268, Kerberoasting probe (SPN enumeration),
-#             MS-RPC/135 Windows fingerprint.
-#
-#  [MOD-005] Lateral movement — actual TCP reachability — audit_lateral()
-#             Nie tylko "czy port jest otwarty" ale faktyczna próba połączenia
-#             TCP per host:port. Wykrywa brak segmentacji east-west.
-#             Port scope: 445/22/3389/5985/5986/3306/1433/5432/6379/27017.
-#             Specific findings: SMB bez signing, RDP public, WinRM, DB exposure.
-#
-#  [MOD-006] Attack Path / Kill Chain — build_attack_path()
-#             5-krokowy kill chain (MITRE ATT&CK): Initial Access, Execution,
-#             Lateral Movement, Privilege Escalation, Impact/Exfiltration.
-#             Opiera się na wykrytych danych — bez hardcodowania.
-#             Nowa sekcja HTML z tabelą kill chain + AD attack context.
-#
-#  [MOD-007] Remediation Roadmap — build_remediation_roadmap()
-#             3 horyzonty: Quick (0-7d CVSS≥9), Short (1-4tyg CVSS≥7),
-#             Strategic (3-6m architektura). Nowa sekcja HTML z tabelami.
-#             C-suite executive briefing w sekcji s1 z business impact narrative.
-#
-#  [FIX-018] OS detection rozszerzony: 4 warstwy (TTL → vendor OUI →
-#             banner grep → port combinations). Dodano: Proxmox, Docker,
-#             K8s, SCADA/ICS, BACnet, RouterOS, pfSense, Synology, Ubiquiti.
-#
-#  [FIX-019] Role detection: Proxmox, Docker API, K8s/etcd, SNMP device,
-#             SCADA/ICS, BACnet, Memcached, RabbitMQ, Kafka.
-#
-#  [FIX-020] Banner ports expanded: Redis:6380, Proxmox:8006, Kibana:5601,
-#             RabbitMQ:15672, Docker:2375/2376, IMAPS:993, POP3S:995.
-#
-# ── CHANGELOG v26.2.9 ──────────────────────────────────────────────────────────
-#
-#  [FIX-017] discover_hosts(): host z DROP policy niewidoczny
-#             ROOT CAUSE: TCP probe sprawdzał tylko porty 22/80/443/445/3389/53
-#             i rejestrował host TYLKO gdy rc=0 (OPEN). Host z pełnym DROP policy
-#             (brak ICMP, brak RST) zwraca timeout → alive=0 → host pominięty.
-#
-#             POPRAWKA 1 — TCP probe rozszerzony:
-#               Dodano porty 22222/8006/9200/9000, timeout 0.8s (był 1s).
-#
-#             POPRAWKA 2 — g_host_detect fallback:
-#               Gdy TCP probe nie wykryje hosta, uruchamia g_host_detect()
-#               (Gandalf: g_tcp_probe per port). Rozróżnia HOST_PRESENT
-#               vs HOST_FIREWALLED (≥2 portów FILTERED = host istnieje za DROP).
-#               Hosty HOST_FIREWALLED są rejestrowane z finding FIREWALLED_HOST.
-#
-#             POPRAWKA 3 — ARP: /proc/net/arp:
-#               Dodano jako trzecie źródło ARP (WSL-friendly, kernel ARP table
-#               dostępna nawet gdy "ip neigh" jest ograniczone w WSL).
-#               Dotyczy obu miejsc: discover_hosts() i probe_topology().
-#
-#             POPRAWKA 4 — g_host_detect ports:
-#               Rozszerzono z (22 80 443 445) do
-#               (22 80 443 445 8080 3389 53 22222 8006 9200 9000).
-#
-# ── CHANGELOG v26.2.8 ──────────────────────────────────────────────────────────
-#
-#  [FIX-016] map_compliance(): idx: unbound variable
-#             LOKALIZACJA: linia ~4069
-#             PRZYCZYNA: bash ewaluuje wszystkie wartości w jednej instrukcji
-#             "local" od lewej do prawej, w jednym przebiegu. Zmienna idx
-#             nie jest jeszcze przypisana gdy bash ewaluuje ${D_PORTS[$idx]}
-#             po prawej stronie — set -u → "idx: unbound variable".
-#               BYŁO:   local idx="$1" ports="${D_PORTS[$idx]}" score="..."
-#               JEST:   local idx="$1"
-#                       local ports="${D_PORTS[$idx]:-}" score="..."
-#
-# ── CHANGELOG v26.2.7 ──────────────────────────────────────────────────────────
-#
-#  [FIX-014] g_tcp_probe / _port_fingerprint / declare BH/PHASE_X: command not found
-#             Ten sam root cause co FIX-008/013: blok (##..## + funkcje g_* + deklaracje
-#             BH/BMAP/PHASE_X) zdefiniowany PO bloku wykonawczym. Przeniesiony przed
-#             "# NOWY MAIN".
-#
-#  [FIX-015] BH[] subshell isolation — "172.31.0.1:80:reactivity: invalid arithmetic"
-#             ROOT CAUSE: bash associative arrays NIE dziedziczą do subshell $().
-#             Funkcje _bh_baseline, _bh_deception_probe, _bh_window_analyze,
-#             _bh_classify_zone (x2), _choose_next_target wywoływane jako $() —
-#             odczyty BH zwracały puste wartości, zapisy były tracone.
-#             POPRAWKA: Każda z tych funkcji ustawia globalną _BH_RET="" zamiast
-#             tylko echo. Wywołania zmienione z result=$(...) na:
-#               func args; result="$_BH_RET"
-#             Backward-compatible: echo nadal istnieje dla pipe-usage.
-#
-# ── CHANGELOG v26.2.6 ──────────────────────────────────────────────────────────
-#
-#  [CLEAN-002] Usunięto zbędne bloki dekoracyjne:
-#              - ASCII art FAZA X (8 linii ██ + 20 linii opisu filozoficznego)
-#              - "Pies wraca. Jabol..." (KONIEC FAZY X)
-#              - "Malarz tyka lewą ścianę. Strażnik..." (cross-service dep.)
-#              - "Gandalf (g_tcp_probe) jako mag / czas to zapach"
-#              - log "FAZA X: BEHAVIOURAL RECON — Pies, Malarz, Zlodziej"
-#              - komentarze "idź w stronę zapachu" / "gdzie jest najsilniejszy zapach"
-#              Zastąpione zwięzłymi techicznymi opisami.
-#
-# ── CHANGELOG v26.2.5 ──────────────────────────────────────────────────────────
-#
-#  [FEAT-001] Internationalisation: --lang pl|en
-#             declare -A _MSG_PL[] i _MSG_EN[] z ~80 kluczami obejmującymi
-#             wszystkie SECTION/INFO/WARN/OK komunikaty. Funkcja L() podstawia
-#             %s argumenty przez printf. Domyślny język: pl.
-#             Użycie: bash EWNAF.sh --lang en
-#
-#  [FIX-013] _bh_probe_full / _bh_budget_ok / export_phase_x_findings: command not found
-#             PRZYCZYNA: cały blok Fazy X (19 funkcji _bh_* + export_phase_x_findings
-#             + declare -A BH_WINDOW) zdefiniowany PO bloku wykonawczym (linia ~5900).
-#             Ten sam problem co _conf_calibrate (FIX-008): bash sekwencyjny.
-#             POPRAWKA: Przeniesiono cały blok (# SLIDING WINDOW..KONIEC FAZY X)
-#             przed "# NOWY MAIN — PETLA ZAMIAST PIPELINE".
-#
-#  [CLEAN-001] Usunięto opisowe komunikaty "jak dla dzieci":
-#             "Sprawdzam lokalne instalacje..." → "[Fleet] local scan..."
-#             "Skanuję sieć w poszukiwaniu Fleet server..." → "[Fleet] network scan..."
-#             "[0.x] Wykrywanie/Generowanie/Dobór..." → skrótowe etykiety
-#             Wszystkie SECTION nagłówki skrócone do formy technicznej.
-#
-# ── CHANGELOG v26.2.4 ──────────────────────────────────────────────────────────
-#
-#  [FIX-012] awk: backslash not last character on line
-#            LOKALIZACJA: _tls_fp_openssl() linia 763
-#            PRZYCZYNA: awk -F'=' '/Fingerprint=/{gsub(/:/,"",\$2)...'
-#              \$2 wewnątrz single-quoted awk program = literalny backslash + $2.
-#              awk interpretuje \$ jako nieznany escape → syntax error.
-#              W single quotes bash nie dotyka $, więc backslash był zbędny.
-#            POPRAWKA: \$2 → $2
-#
-# ── CHANGELOG v26.2.3 ──────────────────────────────────────────────────────────
-#
-#  [FIX-010] _dig_classify / _dns_egress_probe / _tls_fp_openssl: command not found
-#            PRZYCZYNA: html_esc() (linia ~675) zawierała:
-#              s="${s//'/&#39;}"
-#            Apostrophe jako wzorzec w ${s//PAT/REP} wewnątrz double-quotes
-#            jest syntaktycznie poprawny w bash (RFC), ale bash PARSER w pewnych
-#            kontekstach (process substitution, source przez pipe) interpretuje '
-#            jako koniec stringa, pozostawiając resztę pliku jako "raw string".
-#            Wszystkie definicje funkcji PO html_esc (w tym _dig_classify, linia ~688,
-#            _dns_egress_probe, _tls_fp_openssl, _doh_json_ok) były "wchłaniane"
-#            przez niezamknięty parser state i nigdy nie były rejestrowane.
-#            POPRAWKA: Zastąpiono apostroph przez zmienną pośrednią:
-#              local _sq=$'''
-#              s="${s//$_sq/&#39;}"
-#
-#  [FIX-011] BH_BUDGET: unbound variable
-#            PRZYCZYNA: BH_* parametry Fazy X inicjalizowane przez ': "${BH_*:=N}"'
-#              na linii ~6138 (Faza X sekcja) — PO bloku wykonawczym (5869).
-#              set -u powoduje crash przy ${BH_BUDGET} w linii 5674 gdy nie
-#              podano --budget flag (nie inicjalizowane przez arg parser).
-#            POPRAWKA: Dodano deklaracje globalne z wartościami domyślnymi
-#              na linii 230 (przed blokiem wykonawczym):
-#              BH_BUDGET="${BH_BUDGET:-150}"  (i 6 pozostałych BH_* zmiennych)
-#              Format :-N zamiast :=N pozwala --budget flagę nadpisać wartość.
-#
-# ── CHANGELOG v26.2.2 ──────────────────────────────────────────────────────────
-#
-#  [FIX-008] _conf_calibrate: command not found — POTWIERDZONE
-#            PRZYCZYNA: _conf_calibrate() zdefiniowana na linii ~6344 (Faza X),
-#              PO bloku wykonawczym (linia ~5827). Bash jest interpreterem
-#              sekwencyjnym — parsuje i wykonuje linia po linii. Gdy "preflight"
-#              uruchamia topo_detect_dns_filter → _conf_dns_filter → _conf_calibrate,
-#              parser nie doszedł jeszcze do linii 6344. Funkcja nie istnieje.
-#            POPRAWKA: Przeniesiono _conf_calibrate() na linię ~438 — przed
-#              wszystkimi adapterami _conf_*() które jej używają.
-#
-#  [FIX-009] _dig_classify: command not found — DIAGNOSTYKA
-#            ANALIZA: _dig_classify() (linia 663) jest zdefiniowana PRZED blokiem
-#              wykonawczym (5835) — kolejność jest poprawna.
-#              Błąd "command not found" przy uruchomieniu sugeruje wykonanie przez
-#              'sh' lub 'dash' zamiast 'bash'. W sh/dash:
-#              - składnia `func() {` może nie być parsowana identycznie
-#              - brak declare -A (associative arrays) powoduje cascade failures
-#              - bash-specific builtins crashują przy definicji funkcji
-#            POPRAWKA: Dodano guard po set -uo pipefail:
-#              sprawdzenie BASH_VERSION >= 4.4 z czytelnym komunikatem błędu.
-#              Uruchomienie przez 'sh skrypt.sh' teraz daje:
-#              "EWNAF wymaga bash >= 4.4. Uruchom: bash <skrypt>"
-#
-# ── CHANGELOG v26.2.1 ──────────────────────────────────────────────────────────
-#
-#  BUGFIXES:
-#
-#  [FIX-005] _conf_calibrate() — bomba wyjaśniona
-#            STAN: funkcja istnieje na linii 6319, poziom globalny, dostępna.
-#            Brak akcji wymagany. Udokumentowane dla przejrzystości.
-#
-#  [FIX-006] SSH tarpit — compound regex w [[ ... ]]
-#            PROBLEM: `[[ A =~ X && ! B =~ Y ]]` — bash ocenia `&&` wewnątrz
-#                     `[[` jako bitowy operator w niektórych kontekstach.
-#                     Nieczytelne, ryzykowne przy rozszerzaniu.
-#            POPRAWKA: Rozdzielono na dwa oddzielne wyrażenia:
-#                      `[[ A =~ X ]] && [[ ! B =~ Y ]]`
-#
-#  [FIX-007] prefix shift — potencjalny UB i crash (3 miejsca)
-#            PROBLEM: `local _mask=$(( 0xFFFFFFFF << (32-prefix) & 0xFFFFFFFF ))`
-#                     - prefix="" (pusty cidr z broken ip) → bash arytm. crash
-#                     - prefix=0 → shift 32 → _mask=0 → full_net="0.0.0.0/0"
-#                       (błędny subnet, potencjalnie wchodzi do SUBNETS[])
-#            POPRAWKA: Guard przed każdym shiftem (3 miejsca: topo_select_subnets,
-#                      preflight subnet detection, ultimate fallback):
-#                        _is_int "$prefix" || continue
-#                        (( prefix < 1 || prefix > 32 )) && continue
-#
-# ── CHANGELOG v26.2.0 ──────────────────────────────────────────────────────────
-#
-#  ARCHITEKTURA — Centralny model confidence
-#
-#  Problem: 9 niezależnych modeli confidence z różnymi architekturami:
-#    - Modele A (addytywne): _fw_drop_confidence, _ssh_tarpit_confidence
-#    - Modele B (skokowe stałe): IDS, DNS filter, L3 drop, DNS leak, TLS
-#    - Model C (sample-count only): L3 east-west
-#    - Model D (multiplicatywny): Faza X _conf_calibrate()
-#  Każdy definiował "co to pewność" inaczej. Zmiana jednego nie propagowała.
-#
-#  Rozwiązanie:
-#    _conf_calibrate() (linia ~6356) — istniejący multiplicatywny engine —
-#    awansuje do roli jedynego kalkulatora confidence w całym skrypcie.
-#    Wzór: conf = 50 × N_factor × (1−V_penalty) × R_factor × B_factor
-#      N_factor  = min(1, observations/required)  — rośnie z próbką
-#      V_penalty = variance/200                   — kara za zmienność
-#      R_factor  = 0.5 + repeats/(2×observations) — powtarzalność
-#      B_factor  = 1.0 jeśli baseline, 0.75 jeśli nie
-#
-#  Adaptery domenowe (linia ~335–510) — każdy tłumaczy surowe dane na
-#  5 parametrów silnika i deleguje obliczenie:
-#    _conf_fw_drop()         firewall DROP: med, var(ms), n_drop, n_total, baseline
-#    _conf_ssh_tarpit()      SSH tarpit: med, var(ms), baseline, banner_ok
-#    _conf_ids_ratelimit()   IDS/rate-limit: base_gw, post_gw, var(ms), ext_spiked
-#    _conf_dns_filter()      DNS filtering: n_blocked, n_observed
-#    _conf_l3_silent_drop()  L3 silent DROP: delta(ms), baseline(ms)
-#    _conf_l3_east_west()    L3 east-west: flat_total, flat_hits
-#    _conf_dns_leak()        DNS leak: udp_ok, tcp_ok, n_tested
-#    _conf_tls_intercept()   TLS interception: issuer_match, san_delta, n_checks
-#
-#  Progi decyzyjne (>= 65, >= 75, >= 80, >= 85) NIEZMIENIONE — to jest
-#  wiedza domenowa, nie silnik.
-#
-#  Stare funkcje _fw_drop_confidence() i _ssh_tarpit_confidence() zachowane
-#  jako wrappery delegujące do adapterów (backward-compat z 2 callerami).
-#
-#  Efekt: zmiana parametryzacji silnika propaguje automatycznie do wszystkich
-#  9 modeli. Zero rozbieżności między domenami.
-#
-# ── CHANGELOG v26.1.0 ──────────────────────────────────────────────────────────
-#
-#  REFACTORING — probe_topology() rozdzielona na subfunkcje:
-#
-#  [REFAC-001] probe_topology() — 454 linie → orchestrator 42 linie
-#              Poprzednio: monolit łączący 8 niezależnych zadań w jednej funkcji.
-#              Zmiana czysto strukturalna — zero zmiany logiki.
-#              Nowe funkcje wywoływane w tej samej kolejności:
-#                topo_detect_vpn()          [0.1] VPN/Tunnel detection
-#                topo_detect_wan()          [0.2] WAN IP vs VPN IP
-#                topo_detect_nat()          [0.3] NAT Layers
-#                topo_detect_ids()          [0.4a] IDS/Rate-limit detection
-#                topo_detect_dns_filter()   [0.4b] DNS filtering
-#                topo_detect_ssh_tarpit()   [0.4c] SSH tarpit (behawioralny)
-#                topo_detect_autoban()      [0.4d] Auto-ban detection
-#                topo_detect_firewall()     [0.5] Firewall fingerprint
-#                topo_select_subnets()      [0.6] Subnet selection
-#                topo_scan_recommendation() [0.7] Scan recommendation
-#                topo_generate_report()     [0.8] Topology report
-#              Korzyść: każdą subfunkcję można testować i debugować niezależnie.
-#              Efekt domina podczas poprawek ograniczony do jednej funkcji.
-#
-#  PRECISION — IDS detection (topo_detect_ids):
-#
-#  [PREC-001]  Dodano zbieranie 3 próbek variance post-burst (_ids_post_samples).
-#              Poprzednio: decyzja wyłącznie na podstawie mediany (podatne na
-#              chwilowy jitter ISP lub wolny router embedded).
-#              Teraz: niska wariancja (< 500ms) = stabilny throttling → +8% conf.
-#              TOPO[ids_conf] zapisywany i używany w DEFENSE_SCORE.
-#
-#  PRECISION — SSH tarpit detection (topo_detect_ssh_tarpit):
-#
-#  [PREC-002]  Hard floor: jeśli median < 2500ms I ratio < 800%, confidence
-#              redukowane do 70% wartości bazowej.
-#              Problem: endlessh z małym delay (~1500ms) + wolny router embedded
-#              mogły dawać false positive przy _ssh_conf >= 85%.
-#              Teraz próg praktycznie eliminuje false positive na routerach 4G/DSL.
-#              Logika _ssh_tarpit_confidence() niezmieniona.
-#              n_samples guard: wykonanie confidence tylko gdy n_samples >= 3.
-#
-#  NOWE — Defense Posture scoring:
-#
-#  [NEW-001]   DEFENSE_SCORE (0-100), DEFENSE_LEVEL (Low/Medium/High/Advanced),
-#              DEFENSE_SUMMARY (jednozdaniowy opis) — globalne zmienne.
-#              Obliczane w build_executive() po GLOBAL_SCORE.
-#              Model: suma ważona 7 warstw obrony z confidence-scaling:
-#                Warstwa 1: Stateful firewall (max 20 pkt, skalowany przez conf)
-#                Warstwa 2: IDS/Rate limiting (max 20 pkt, skalowany przez conf)
-#                Warstwa 3: DNS Filtering     (15 pkt stały)
-#                Warstwa 4: L3 East-West izolacja (15 pkt)
-#                Warstwa 5: Cross-subnet blokada  (10 pkt)
-#                Warstwa 6: Egress kontrola       (5 + 5 pkt)
-#                Warstwa 7: Auto-ban + SSH tarpit  (6 + 4 pkt)
-#              Progi: <30=Low, 30-54=Medium, 55-79=High, >=80=Advanced
-#              Eksport: JSON "executive.defense_score/level/summary"
-#              HTML: nowy KPI box w dashboardzie (kolor zależny od poziomu)
-#              Konsola: nowy blok "DEFENSE POSTURE" w print_summary z paskiem
-#
-# ────────────────────────────────────────────────────────────────────────────────
+# EWNAF v38.1 — Enterprise Network Audit Framework
+# Heuristic Network Audit | Bash 4.4+ | Production build
+# METHODOLOGY: RESIDUAL RISK = RAW_RISK - VERIFIED_MITIGATIONS
+# PHASE X: Optional behavioural module (--phase-x)
+# POLICY: No exploits | No brute force | Observation-first reconnaissance
 
 set -uo pipefail
 
-# Optional strict mode: enable errexit + ERR trap (off by default for backward-compat)
 _err_trap() {
     local rc=$? line="${BASH_LINENO[0]:-?}" cmd="${BASH_COMMAND:-?}"
     if declare -F log >/dev/null 2>&1; then
@@ -438,25 +17,20 @@ _err_trap() {
     return $rc
 }
 
-# Guard: skrypt wymaga bash 4.4+ (associative arrays, nameref, declare -A)
-# Uruchomienie przez 'sh skrypt.sh' zamiast 'bash skrypt.sh' lub './skrypt.sh'
-# powoduje "command not found" dla wszystkich funkcji z powodu braku hoistingu w dash/sh
 if [[ -z "${BASH_VERSION:-}" ]] || (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
-    echo "EWNAF wymaga bash >= 4.4. Uruchom: bash ${BASH_SOURCE[0]:-$0}" >&2
+    echo "EWNAF requires bash >= 4.4. Run: bash ${BASH_SOURCE[0]:-$0}" >&2
     exit 1
 fi
 
-readonly VERSION="36.6.0-RADAR-RESET-FINAL-R2"
+readonly VERSION="38.1.0-ENTERPRISE-PRODUCTION"
 readonly TIMESTAMP="$(date +"%Y%m%d-%H%M%S")"
-readonly LOCK_FILE="/tmp/net_audit_v26.lock"
+readonly LOCK_FILE="/tmp/ewnaf_v38.lock"
 readonly SEP=$'\x01'
 
-# Kolory
 readonly CR="\033[0;31m" CO="\033[0;33m" CG="\033[0;32m" CC="\033[0;36m"
 readonly CW="\033[1;37m" CD="\033[0;37m" CM="\033[0;35m" CN="\033[0m"
 readonly CBOLD="\033[1m"
 
-# Dynamiczne cele odniesienia — bez twardych adresów IP
 readonly EXT_DNS_PRIMARY=""
 readonly EXT_DNS_SECONDARY=""
 readonly EXT_DNS_TERTIARY=""
@@ -464,22 +38,18 @@ readonly EXT_DNS_QUAD=""
 readonly EXT_CTRL_HOST=""
 readonly EXT_CTRL_HOST2=""
 
-# v28 architectural hardening — target-centric audit only
 TARGET_CENTRIC_MODE=1
 EXPORT_RAW_IDENTIFIERS=0
 ENABLE_LOCAL_TOPOLOGY_INFERENCE=0
 ENABLE_OPTIONAL_PRODUCT_MODULES=0
 ENABLE_WAN_DISCOVERY=0
+ENABLE_PHASE_X="${ENABLE_PHASE_X:-0}"   
 PASSIVE_ONLY="${PASSIVE_ONLY:-1}"
 GENERIC_BEHAVIOUR_LABELS="${GENERIC_BEHAVIOUR_LABELS:-1}"
 TOPOLOGY_NMAP_ENABLED="${TOPOLOGY_NMAP_ENABLED:-1}"
 TOPOLOGY_NMAP_MAX_PORTS="${TOPOLOGY_NMAP_MAX_PORTS:-12}"
 TOPOLOGY_NMAP_HOST_TIMEOUT="${TOPOLOGY_NMAP_HOST_TIMEOUT:-20s}"
 TOPOLOGY_NMAP_VERSION="${TOPOLOGY_NMAP_VERSION:-1}"
-
-
-
-# PARAMETRY
 
 MODE="${MODE:-passive}"
 CLIENT_NAME="Enterprise"
@@ -524,7 +94,6 @@ STRICT_MODE=0
 DETERMINISTIC=0
 DETERMINISTIC_SEED=""
 
-# Faza X — domyślne parametry behawioralne (nadpisywane przez --budget i env)
 BH_BUDGET="${BH_BUDGET:-150}"
 BH_JITTER_MAX="${BH_JITTER_MAX:-900}"
 BH_JITTER_MIN="${BH_JITTER_MIN:-80}"
@@ -532,7 +101,6 @@ BH_BURST_SIZE="${BH_BURST_SIZE:-5}"
 BH_COOLDOWN="${BH_COOLDOWN:-3}"
 BH_BASELINE_N="${BH_BASELINE_N:-3}"
 BH_PROBE_TIMEOUT="${BH_PROBE_TIMEOUT:-2}"
-
 
 ewnaf_profile_label() {
     case "${MODE:-passive}" in
@@ -543,146 +111,46 @@ ewnaf_profile_label() {
     esac
 }
 
-ewnaf_choose_language() {
-    if [[ "${LANG_EXPLICIT:-0}" == "1" ]]; then
-        [[ "${LANG_MODE:-pl}" != "en" ]] && LANG_MODE="pl"
-        return 0
-    fi
-    if [[ -t 0 && -t 1 ]]; then
-        echo
-        echo "Wybierz język / Choose language"
-        echo "  1) Polski"
-        echo "  2) English"
-        read -r -p "> " _ewnaf_lang_choice
-        case "${_ewnaf_lang_choice:-1}" in
-            2|en|EN|English|english) LANG_MODE="en" ;;
-            *) LANG_MODE="pl" ;;
-        esac
-    else
-        LANG_MODE="${LANG_MODE:-pl}"
-        [[ "$LANG_MODE" != "en" ]] && LANG_MODE="pl"
-    fi
-}
-
-ewnaf_show_intro() {
-    local profile
-    profile="$(ewnaf_profile_label)"
-    echo
-    if [[ "${LANG_MODE:-pl}" == "en" ]]; then
-        cat <<EOF
-EWNAF is a defensive heuristic network audit.
-It is observation-first: it maps behaviour, segmentation, exposure, topology
-and risk signals without assigning vendor-specific product labels.
-
-Selected execution profile: ${profile}
-- strict_passive: observe only
-- light_active: limited verification
-- deep_active: broader validation inside authorized scope
-
-The runtime environment is treated as an observation point, not as a representative model of the entire network.
-Use this tool only on infrastructure you own or are explicitly authorized to assess.
-The report is expected to contain signals, inferences, confidence and limitations.
-EOF
-    else
-        cat <<EOF
-EWNAF jest defensywnym heurystycznym audytem sieci.
-Działa w modelu observation-first: mapuje zachowanie, segmentację, ekspozycję,
-topologię i sygnały ryzyka bez przypisywania nazw konkretnym produktom.
-
-Wybrany profil wykonania: ${profile}
-- strict_passive: wyłącznie obserwacja
-- light_active: ograniczona weryfikacja
-- deep_active: szersza walidacja w autoryzowanym zakresie
-
-Audyt nie powinien zakładać, że środowisko uruchomieniowe audytora jest reprezentatywne dla całej sieci.
-Narzędzie należy stosować wyłącznie we własnej infrastrukturze albo na podstawie
-wyraźnego upoważnienia. Raport powinien zawierać sygnały, wnioski, pewność i ograniczenia.
-EOF
-    fi
-    echo
-}
-
-
-ewnaf_legal_notice() {
-    echo
-    if [[ "${LANG_MODE:-pl}" == "en" ]]; then
-        cat <<EOF
-Usage notice:
-- defensive audit only
-- use only on infrastructure you own or are explicitly authorized to assess
-- no claim of complete network truth from a single vantage point
-- interpret results together with confidence and limitations
-EOF
-    else
-        cat <<EOF
-Informacja o użyciu:
-- wyłącznie audyt defensywny
-- użycie tylko we własnej infrastrukturze albo za wyraźnym upoważnieniem
-- brak założenia, że jeden punkt obserwacji opisuje całą sieć
-- wyniki należy interpretować razem z pewnością i ograniczeniami
-EOF
-    fi
-    echo
-}
-ewnaf_confirm_intro() {
-    local answer
-    if [[ ! -t 0 || ! -t 1 ]]; then
-        return 0
-    fi
-    if [[ "${LANG_MODE:-pl}" == "en" ]]; then
-        read -r -p "Do you want to continue? [Y/N] " answer
-        [[ "$answer" =~ ^([YyTt])$ ]]
-    else
-        read -r -p "Czy chcesz kontynuować? [T/N] " answer
-        [[ "$answer" =~ ^([TtYy])$ ]]
-    fi
-}
-
 usage() {
     cat <<EOF
-EWNAF v${VERSION} – Defensive Heuristic Network Audit / Defensywny heurystyczny audyt sieci
+EWNAF v${VERSION} — Enterprise Defensive Heuristic Network Audit
 
-Usage / Użycie: $0 [OPTIONS]
+Usage: $0 [OPTIONS]
 
-  -m|--mode        passive|standard|deep  (default/domyslnie: passive)
-  -c|--client      Client / Nazwa klienta
-  -o|--output      Output directory / Katalog wyjściowy (default: ~/EWNAF-Reports)
-  -s|--subnets     Optional scope seed CSV / Opcjonalny seed scope CSV
-  -w|--wan         Public router IP for exposure check / Publiczny IP routera do testu ekspozycji
-  -j|--jobs        Max parallel jobs / Maks. równoległych zadań
-  --budget         Behavioural budget / Budżet heurystyczny
-  --skip-wan       Skip WAN checks / Pomiń testy WAN
-  --skip-banners   Skip banner grab / Pomiń banner grab
-  --lang           pl|en
-  -q|--quiet       Suppress console output / Bez outputu do konsoli
+  -m|--mode        passive|standard|deep  (default: passive)
+  -c|--client      Client name identifier
+  -o|--output      Output directory (default: ~/EWNAF-Reports)
+  -s|--subnets     Scope seed CSV (optional)
+  -w|--wan         Public router IP for exposure assessment
+  -j|--jobs        Max parallel jobs (default: 20)
+  --budget         Behavioural probe budget (default: 150)
+  --skip-wan       Skip WAN exposure checks
+  --skip-banners   Skip banner grab phase
+  -q|--quiet       Suppress console output (reports only)
+  --verbose        Force console output (default)
   --strict         Strict mode (set -eE + ERR trap)
   --deterministic  Stable host order + seeded randomness
   --seed           Seed for deterministic mode
-  --gentle         Conservative pacing / Zachowawcze tempo
-  --aggressive     Stronger active verification / Mocniejsza aktywna weryfikacja
-  -h|--help        Show help / Pomoc
+  --gentle         Conservative pacing (default)
+  --aggressive     Stronger active verification
+  --phase-x        Enable Phase X behavioural analysis module
+  -h|--help        Show this help
 
-Profiles / Profile:
-  passive   = strict passive / ścisły pasywny
-  standard  = light active / lekko aktywny
-  deep      = deep active / głęboko aktywny
+Profiles:
+  passive   = strict passive reconnaissance (observation only)
+  standard  = light active verification
+  deep      = deep active validation within authorised scope
 
-This tool is observation-first. It must be used only on infrastructure you own
-or are explicitly authorized to assess.
+This tool is observation-first. Use only on infrastructure you own
+or are explicitly authorised to assess.
 EOF
     exit 0
 }
 
-# Enterprise safety: domyślnie żadnych instalacji / zmian na hoście audytora
-ALLOW_INSTALL=0
-CHAOS_MODE=0
-CHAOS_TARGET=""
-LANG_MODE="pl"   # pl | en
-LANG_EXPLICIT=0
 
 TEMP=$(getopt -o m:c:o:s:w:j:hq \
-    --long mode:,client:,output:,subnets:,wan:,jobs:,budget:,lang:,seed:,skip-wan,skip-banners,strict,deterministic,gentle,aggressive,quiet,help \
-    -n "$(basename "$0")" -- "$@") || { echo "[ERROR] Invalid arguments / Błędne argumenty"; exit 1; }
+    --long mode:,client:,output:,subnets:,wan:,jobs:,budget:,seed:,skip-wan,skip-banners,strict,deterministic,gentle,aggressive,phase-x,quiet,verbose,help \
+    -n "$(basename "$0")" -- "$@") || { echo "[ERROR] Invalid arguments"; exit 1; }
 eval set -- "$TEMP"; unset TEMP
 
 while true; do
@@ -696,174 +164,62 @@ while true; do
         --budget)        BH_BUDGET="$2";        shift 2 ;;
         --skip-wan)      SKIP_WAN=1;            shift   ;;
         --skip-banners)  SKIP_BANNERS=1;        shift   ;;
-                --gentle)        SAFE_MODE=1;            shift   ;;
---aggressive)    SAFE_MODE=0;            shift   ;;
-
-
-
+        --gentle)        SAFE_MODE=1;           shift   ;;
+        --aggressive)    SAFE_MODE=0;           shift   ;;
+        --phase-x)       ENABLE_PHASE_X=1;     shift   ;;
         --strict)        STRICT_MODE=1;        shift   ;;
         --deterministic) DETERMINISTIC=1;      shift   ;;
         --seed)          DETERMINISTIC_SEED="$2"; shift 2 ;;
-        --lang)          LANG_MODE="${2,,}"; LANG_EXPLICIT=1; shift 2 ;;
         -q|--quiet)      QUIET=1;               shift   ;;
+        --verbose)       QUIET=0;               shift   ;;
         -h|--help)       usage; exit 0          ;;
         --) shift; break ;;
-        *)  echo "Nieznany parametr: $1"; exit 1 ;;
+        *)  echo "Unknown parameter: $1"; exit 1 ;;
     esac
 done
 
-ewnaf_choose_language
-ewnaf_show_intro
-ewnaf_legal_notice
-if ! ewnaf_confirm_intro; then
-    [[ "${LANG_MODE:-pl}" == "en" ]] && echo "Cancelled by user." || echo "Anulowano przez użytkownika."
-    exit 0
-fi
 
-# ── Gentle (default) safety clamps ────────────────────────────────────────────
 if [[ "${SAFE_MODE:-1}" == "1" ]]; then
-    # Keep it polite: limit concurrency and reduce behavioural burst.
     [[ "${MAX_PARALLEL}" -gt 20 ]] && MAX_PARALLEL=20
     BH_BURST_SIZE=2
     BH_JITTER_MAX=250
     BH_JITTER_MIN=80
     BH_COOLDOWN=4
     BH_PROBE_TIMEOUT=2
-    # TCP probe pacing
     G_RETRY=2
     G_DELAY=1
-    # lower connect timeout slightly to avoid long hangs (still polite)
     : "${G_TIMEOUT:=2}"
 else
-    # Aggressive mode: allow higher concurrency (user-controlled) and stronger probing.
     : "${G_TIMEOUT:=2}"
 fi
 
-# Small random jitter between probes to avoid bursty patterns
 _jitter_sleep() {
     local ms="${SAFE_JITTER_MS:-0}"
     if [[ "${SAFE_MODE:-1}" == "1" && "${ms}" -gt 0 ]]; then
-        # 0..ms milliseconds
         local r=$((RANDOM % (ms+1)))
         sleep "0.$(printf '%03d' "$r")"
     fi
 }
-# Activate strict mode after CLI parsing
 if [[ "${STRICT_MODE:-0}" == "1" ]]; then
     set -eE
     trap _err_trap ERR
 fi
 
-# Deterministic mode: stable ordering + seeded randomness
 if [[ "${DETERMINISTIC:-0}" == "1" ]]; then
-    # Seed RANDOM (bash uses 16-bit LCG). Hash string seed to int if needed.
     if [[ -n "${DETERMINISTIC_SEED:-}" ]]; then
         if [[ "${DETERMINISTIC_SEED}" =~ ^[0-9]+$ ]]; then
             RANDOM=$(( DETERMINISTIC_SEED % 32768 ))
         else
-            # Poor-man hash (portable)
-            local_seed=$(printf "%s" "${DETERMINISTIC_SEED}" | od -An -tu2 2>/dev/null | tr -d " " | head -c 5)
-            [[ -z "$local_seed" ]] && local_seed=1337
-            RANDOM=$(( local_seed % 32768 ))
+            _det_seed=$(printf "%s" "${DETERMINISTIC_SEED}" | od -An -tu2 2>/dev/null | tr -d " " | head -c 5)
+            [[ -z "$_det_seed" ]] && _det_seed=1337
+            RANDOM=$(( _det_seed % 32768 ))
         fi
     else
         RANDOM=1337
     fi
-    # Clamp behavioural jitter to deterministic window
     BH_JITTER_MIN=${BH_JITTER_MIN:-120}
     BH_JITTER_MAX=${BH_JITTER_MAX:-120}
 fi
-
-# ── INTERNATIONALISATION ──────────────────────────────────────────────────────
-# Użycie: L key [arg1 arg2 ...]  →  zwraca przetłumaczony string
-# Zmienne w msgach: %s podstawiane kolejno przez argumenty
-#
-# Dostępne języki: pl (domyślny) | en
-#
-# Aktywacja: --lang en  lub  export LANG_MODE=en przed uruchomieniem
-# ─────────────────────────────────────────────────────────────────────────────
-
-declare -A _MSG_PL=(
-    [start]="EWNAF v%s START | Klient: %s | Tryb: %s"
-    [no_hosts]="Brak aktywnych hostów."
-    [scoring]="Scoring..."
-    [phase_0]="TOPOLOGY PROBE"
-    [phase_0_done]="TOPOLOGY PROBE — zakończony"
-    [phase_2]="Faza 2: Infrastruktura sieciowa"
-    [phase_3]="Faza 3: Discovery hostów"
-    [phase_4]="Faza 4: Port scan (%s hostów, tryb=%s)"
-    [phase_5]="Faza 5: Banner grab"
-    [phase_6]="Faza 6: Klasyfikacja"
-    [phase_7]="Faza 7: Weryfikacja usług"
-    [phase_8]="Faza 8: DNS audit"
-    [phase_9]="Faza 9: Egress audit"
-    [phase_10]="Faza 10: WAN exposure (%s)"
-    [phase_11]="Faza 11: Lateral movement"
-    [phase_12]="Faza 12: Firewall audit"
-    [phase_13]="Faza 13: Managed endpoint visibility"
-    [phase_14]="Faza 14: Prowler / AWS"
-    [phase_bh]="EXPLORATORY ENGINE — BEHAVIOURAL ANALYSIS"
-    [preflight]="Preflight"
-    [topo_vpn]="[0.1] VPN/Tunnel"
-    [topo_wan]="[0.2] WAN IP"
-    [topo_nat]="[0.3] NAT layers"
-    [topo_ids]="[0.4] Network defence heuristics"
-    [topo_fw]="[0.5] Firewall fingerprint"
-    [topo_sub]="[0.6] Subnet selection"
-    [topo_rec]="[0.7] Scan recommendation"
-    [topo_rep]="[0.8] Topology report"
-    [topo_stats]="VPN: %s | Deception-like signals: %s | Correlated defence: %s"
-    [topo_secsys]="Observed control classes: %s"
-    [topo_subnets]="Target subnets: %s"
-    [bh_round1]="ROUND 1: behavioural baseline"
-    [bh_round2]="ROUND 2: high-entropy revisit"
-    [bh_state]="SESSION STATE"
-    [bh_hosts]="Hosts: %s | Budget: %s"
-    [no_root]="No root — some tests unavailable"
-    [bash_old]="Bash < 4 — bash 4+ required"
-    [no_subnets]="No target scope. Enterprise auto-discovery found no legal scope from current vantage point (runner/miniserver excluded from audit)"
-    [wan_skip_vpn]="WAN test skipped — VPN active or no WAN IP"
-    [subnet_skip_vpn]="Skipping VPN subnet: %s"
-    [no_subnet_warn]="Topology probe found no subnets — fallback to local"
-    [fleet_local]="  [Fleet] fleetctl: %s (v%s)"
-    [fleet_server_local]="  [Fleet] Server active (local)"
-    [fleet_osquery]="  [Fleet] osquery v%s"
-    [fleet_net]="  [Fleet] Fleet API at %s:%s v%s"
-    [fleet_no_install]="  [Fleet] Not found — skipped"
-    [fleet_no_detect]="  [Fleet] Not detected in network"
-    [fleet_install_ok]="  [Fleet] Installed: %s (v%s)"
-    [fleet_install_fail]="  [Fleet] Auto-install failed: %s"
-    [prowler_installed]="  [Prowler] Found: %s (v%s)"
-    [prowler_no_install]="  [Prowler] Not found — skipped"
-    [prowler_no_aws]="  [Prowler] No AWS credentials — cloud scan skipped"
-    [prowler_running]="  [Prowler] AWS scan running (PID: %s)"
-    [prowler_install_fail]="  [Prowler] Install failed: %s"
-    [l2_section]="Layer 2: broadcast domain"
-    [l3_section]="Layer 3: routing & segmentation"
-    [l3_no_hosts]="  [i] L3: no hosts — skipping segmentation tests"
-    [traffic_section]="Traffic Policy"
-    [http_open]="  [!] HTTP egress (port 80) OPEN — unencrypted channel"
-    [http_blocked]="  [✓] HTTP egress blocked"
-    [dns_filter_ok]="  [✓] DNS filtering confirmed (confidence %s%%)"
-    [dns_filter_weak]="  [i] DNS filtering: weak signal (%s/%s domains)"
-    [dns_leak]="  [!] DNS leak: external resolvers reachable (UDP=%s/4, TCP=%s/4, conf=%s%%)"
-    [dns_leak_weak]="  [~] DNS leak: weak signal (UDP=%s/4, TCP=%s/4, conf=%s%%) — possible ISP passthrough"
-    [dns_noleak]="  [✓] DNS leak blocked (UDP=%s/4, TCP=%s/4)"
-    [tproxy]="  [!] Transparent proxy detected"
-    [gw_drop]="  [✓] GW: stateful DROP (conf=%s%%)"
-    [gw_drop_weak]="  [~] GW: possible DROP (conf=%s%%)"
-    [gw_reject]="  [i] GW: REJECT/RST (conf=%s%% — below DROP threshold)"
-    [egress_ok]="  [✓] Egress filtering: dangerous ports blocked"
-    [egress_fail]="  [!] Egress: %s dangerous ports open"
-    [dns_int_ok]="  Internal DNS %s: responding ✓"
-    [dns_egress_ok]="  DNS egress blocked ✓ (UDP=%s/4, TCP=%s/4)"
-    [fw_sample]="  [FW] samples=%s med=%sms var=%sms ndrop=%s base=%sms conf=%s%%"
-    [honeypot_warn]="  [DEF] ⚠ %s: prawdopodobne zachowanie deception-like (score=%s) — %s"
-    [honeypot_suspect]="  [DEF] ? %s: podejrzane kształtowanie odpowiedzi (score=%s) — %s"
-    [mirage_filter]="  [!] Filtr portów fantomowych aktywny — usuwam mało wiarygodne porty"
-    [hp_section]="Analiza odpowiedzi deception-like"
-    [python_missing]="Python3 not found — PDF skipped"
-)
 
 declare -A _MSG_EN=(
     [start]="EWNAF v%s START | Client: %s | Mode: %s"
@@ -940,50 +296,20 @@ declare -A _MSG_EN=(
     [dns_int_ok]="  Internal DNS %s: responding ✓"
     [dns_egress_ok]="  DNS egress blocked ✓ (UDP=%s/4, TCP=%s/4)"
     [fw_sample]="  [FW] samples=%s med=%sms var=%sms ndrop=%s base=%sms conf=%s%%"
-    [honeypot_warn]="  [DEF] ⚠ %s: prawdopodobne zachowanie deception-like (score=%s) — %s"
-    [honeypot_suspect]="  [DEF] ? %s: podejrzane kształtowanie odpowiedzi (score=%s) — %s"
-    [mirage_filter]="  [!] Filtr portów fantomowych aktywny — usuwam mało wiarygodne porty"
-    [hp_section]="Analiza odpowiedzi deception-like"
+    [honeypot_warn]="  [DEF] ⚠ %s: probable deception-like behaviour (score=%s) — %s"
+    [honeypot_suspect]="  [DEF] ? %s: suspected response shaping (score=%s) — %s"
+    [mirage_filter]="  [!] Phantom port filter active — removing unreliable ports"
+    [hp_section]="Deception-like response analysis"
     [python_missing]="Python3 not found — PDF skipped"
 )
 
-# Lokalizacja: zwróć string dla klucza, podstawiaj %s
 L() {
     local key="$1"; shift
-    local tmpl
-    if [[ "${LANG_MODE:-pl}" == "en" ]]; then
-        tmpl="${_MSG_EN[$key]:-[$key]}"
-    else
-        tmpl="${_MSG_PL[$key]:-[$key]}"
-    fi
-    # printf obsługuje %s podstawienia
+    local tmpl="${_MSG_EN[$key]:-[$key]}"
     # shellcheck disable=SC2059
     printf "$tmpl" "$@"
 }
 
-ewnaf_legal_notice() {
-    if [[ "${LANG_MODE:-pl}" == "en" ]]; then
-        cat <<EOF
-Legal and compliance note:
-Use this tool only on infrastructure you own or are explicitly authorized to assess.
-The methodology is observation-first and aligned with network security risk management
-and technical assessment practices such as ISO/IEC 27001, ISO/IEC 27002,
-ISO/IEC 27005, ISO/IEC 27033, NIST SP 800-115 and NIST CSF.
-EOF
-    else
-        cat <<EOF
-Nota prawna i zgodności:
-Używaj tego narzędzia wyłącznie we własnej infrastrukturze albo na podstawie
-wyraźnego upoważnienia. Metodyka ma charakter observation-first i jest zgodna
-kierunkowo z praktykami zarządzania ryzykiem i ocen technicznych takimi jak
-ISO/IEC 27001, ISO/IEC 27002, ISO/IEC 27005, ISO/IEC 27033, NIST SP 800-115
-oraz NIST CSF.
-EOF
-    fi
-}
-
-
-# Pseudonymization helpers (v28)
 declare -A ENTITY_ALIAS=()
 
 _entity_alias() {
@@ -1032,221 +358,20 @@ HTML_REPORT="$OUTPUT_PATH/EWNAF-REPORT.html"
 REPORT_PDF="$OUTPUT_PATH/EWNAF-REPORT.pdf"
 TOPO_FILE="$OUTPUT_PATH/topology.txt"
 
-rm -f "$LOCK_FILE"
 mkdir -p "$OUTPUT_PATH"
 touch "$LOG_FILE" 2>/dev/null || true
 exec 200>"$LOCK_FILE"
-flock -n 200 || { echo "[!] EWNAF już działa (lock). Abort."; exit 1; }
-cleanup() { ewnaf_miniserver_stop; flock -u 200 2>/dev/null; rm -f "$LOCK_FILE"; }
+flock -n 200 || { echo "[!] EWNAF already running (lock). Abort."; exit 1; }
+cleanup() { flock -u 200 2>/dev/null; rm -f "$LOCK_FILE"; }
 trap cleanup EXIT INT TERM
 chown -R "$REAL_USER:$REAL_USER" "$OUTPUT_ROOT" 2>/dev/null || true
 
-# Embedded mini-server (single-file control plane)
-EWNAF_MINISERVER_ENABLED="${EWNAF_MINISERVER_ENABLED:-0}"
-EWNAF_MINISERVER_PID=""
-EWNAF_MINISERVER_PORT=""
-EWNAF_MINISERVER_URL=""
-EWNAF_MINISERVER_TOKEN=""
-EWNAF_MINISERVER_READY_FILE="$OUTPUT_PATH/miniserver-ready.json"
-EWNAF_MINISERVER_EVENTS_FILE="$OUTPUT_PATH/miniserver-events.ndjson"
-EWNAF_MINISERVER_PY="$OUTPUT_PATH/.ewnaf_miniserver.py"
+EWNAF_MINISERVER_ENABLED=0
 
-_ewnaf_emit_miniserver_py() {
-cat > "$EWNAF_MINISERVER_PY" <<'PY'
-#!/usr/bin/env python3
-import argparse, json, os, secrets, signal, socketserver, sys, threading, time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+ewnaf_miniserver_event() { :; }
 
-STATE = {
-    "started_at": time.time(),
-    "events_path": None,
-    "run_dir": None,
-    "token": None,
-}
-SHUTDOWN = {"server": None}
+ewnaf_miniserver_stop() { :; }
 
-def append_event(obj):
-    path = STATE["events_path"]
-    if not path:
-        return
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
-
-class Handler(BaseHTTPRequestHandler):
-    server_version = "EWNAFMini/1.0"
-    def _send(self, code, payload):
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, fmt, *args):
-        return
-
-    def _auth_ok(self):
-        if self.path.startswith("/healthz"):
-            return True
-        return self.headers.get("X-EWNAF-Token", "") == STATE["token"]
-
-    def do_GET(self):
-        if self.path == "/healthz":
-            self._send(200, {"ok": True, "service": "ewnaf-miniserver"})
-            return
-        if not self._auth_ok():
-            self._send(403, {"ok": False, "error": "forbidden"})
-            return
-        if self.path == "/snapshot":
-            self._send(200, {
-                "ok": True,
-                "started_at": STATE["started_at"],
-                "run_dir": STATE["run_dir"],
-                "events_path": STATE["events_path"],
-            })
-            return
-        self._send(404, {"ok": False, "error": "not_found"})
-
-    def do_POST(self):
-        if not self._auth_ok():
-            self._send(403, {"ok": False, "error": "forbidden"})
-            return
-        length = int(self.headers.get("Content-Length", "0") or "0")
-        raw = self.rfile.read(length) if length > 0 else b"{}"
-        try:
-            payload = json.loads(raw.decode("utf-8", errors="replace"))
-        except Exception:
-            payload = {"raw": raw.decode("utf-8", errors="replace")}
-        if self.path == "/event":
-            append_event({
-                "ts": time.time(),
-                "kind": payload.get("kind", "event"),
-                "value": payload.get("value", ""),
-                "meta": payload.get("meta", {}),
-            })
-            self._send(200, {"ok": True})
-            return
-        if self.path == "/shutdown":
-            self._send(200, {"ok": True, "shutting_down": True})
-            threading.Thread(target=SHUTDOWN["server"].shutdown, daemon=True).start()
-            return
-        self._send(404, {"ok": False, "error": "not_found"})
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--ready-file", required=True)
-    ap.add_argument("--events-file", required=True)
-    ap.add_argument("--run-dir", required=True)
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=0)
-    args = ap.parse_args()
-
-    token = secrets.token_hex(16)
-    STATE["events_path"] = args.events_file
-    STATE["run_dir"] = args.run_dir
-    STATE["token"] = token
-
-    class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
-        daemon_threads = True
-
-    srv = ThreadingHTTPServer((args.host, args.port), Handler)
-    SHUTDOWN["server"] = srv
-
-    ready = {
-        "ok": True,
-        "host": args.host,
-        "port": srv.server_address[1],
-        "token": token,
-        "events_file": args.events_file,
-        "run_dir": args.run_dir,
-    }
-    os.makedirs(os.path.dirname(args.ready_file), exist_ok=True)
-    with open(args.ready_file, "w", encoding="utf-8") as f:
-        json.dump(ready, f, ensure_ascii=False)
-
-    append_event({"ts": time.time(), "kind": "lifecycle", "value": "started", "meta": ready})
-
-    def _handle_sig(*_):
-        try:
-            srv.shutdown()
-        except Exception:
-            pass
-    signal.signal(signal.SIGTERM, _handle_sig)
-    signal.signal(signal.SIGINT, _handle_sig)
-
-    try:
-        srv.serve_forever()
-    finally:
-        append_event({"ts": time.time(), "kind": "lifecycle", "value": "stopped", "meta": {}})
-
-if __name__ == "__main__":
-    main()
-PY
-chmod 700 "$EWNAF_MINISERVER_PY"
-}
-
-ewnaf_miniserver_event() {
-    local kind="${1:-event}" value="${2:-}" meta="${3:-}"
-    [[ "${EWNAF_MINISERVER_ENABLED:-1}" == "1" ]] || return 0
-    [[ -n "${EWNAF_MINISERVER_URL:-}" && -n "${EWNAF_MINISERVER_TOKEN:-}" ]] || return 0
-    local payload
-    payload=$(printf '{"kind":"%s","value":"%s","meta":{"text":"%s"}}' \
-        "$(printf '%s' "$kind" | sed 's/\\/\\\\/g; s/"/\\"/g')" \
-        "$(printf '%s' "$value" | sed 's/\\/\\\\/g; s/"/\\"/g')" \
-        "$(printf '%s' "$meta" | sed 's/\\/\\\\/g; s/"/\\"/g')")
-    curl -fsS -m 2 -H "Content-Type: application/json" -H "X-EWNAF-Token: $EWNAF_MINISERVER_TOKEN" \
-        -d "$payload" "$EWNAF_MINISERVER_URL/event" >/dev/null 2>&1 || true
-}
-
-ewnaf_miniserver_start() {
-    [[ "${EWNAF_MINISERVER_ENABLED:-1}" == "1" ]] || return 0
-    command -v python3 >/dev/null 2>&1 || return 0
-    command -v curl >/dev/null 2>&1 || return 0
-    rm -f "$EWNAF_MINISERVER_READY_FILE" "$EWNAF_MINISERVER_EVENTS_FILE" "$EWNAF_MINISERVER_PY"
-    _ewnaf_emit_miniserver_py
-    python3 "$EWNAF_MINISERVER_PY" \
-        --ready-file "$EWNAF_MINISERVER_READY_FILE" \
-        --events-file "$EWNAF_MINISERVER_EVENTS_FILE" \
-        --run-dir "$OUTPUT_PATH" >/dev/null 2>&1 &
-    EWNAF_MINISERVER_PID=$!
-    local i
-    for i in {1..40}; do
-        [[ -s "$EWNAF_MINISERVER_READY_FILE" ]] && break
-        sleep 0.1
-    done
-    if [[ -s "$EWNAF_MINISERVER_READY_FILE" ]]; then
-        EWNAF_MINISERVER_PORT="$(python3 - <<PY
-import json
-with open(r"$EWNAF_MINISERVER_READY_FILE","r",encoding="utf-8") as f:
-    d=json.load(f)
-print(d.get("port",""))
-PY
-)"
-        EWNAF_MINISERVER_TOKEN="$(python3 - <<PY
-import json
-with open(r"$EWNAF_MINISERVER_READY_FILE","r",encoding="utf-8") as f:
-    d=json.load(f)
-print(d.get("token",""))
-PY
-)"
-        EWNAF_MINISERVER_URL="http://127.0.0.1:${EWNAF_MINISERVER_PORT}"
-    fi
-}
-
-ewnaf_miniserver_stop() {
-    [[ "${EWNAF_MINISERVER_ENABLED:-1}" == "1" ]] || return 0
-    if [[ -n "${EWNAF_MINISERVER_URL:-}" && -n "${EWNAF_MINISERVER_TOKEN:-}" ]]; then
-        curl -fsS -m 2 -H "X-EWNAF-Token: $EWNAF_MINISERVER_TOKEN" -X POST \
-            "$EWNAF_MINISERVER_URL/shutdown" >/dev/null 2>&1 || true
-    fi
-    if [[ -n "${EWNAF_MINISERVER_PID:-}" ]]; then
-        wait "$EWNAF_MINISERVER_PID" 2>/dev/null || true
-    fi
-}
-
-
-# Early IPv4 helper: needed before LOCAL_FOOTPRINT/exclusion bootstrap
 _is_ipv4() {
     local ip="${1:-}" IFS=.
     [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
@@ -1259,15 +384,13 @@ _is_ipv4() {
     return 0
 }
 
-
-# Self-audit exclusion list: control-plane and runner addresses are never audited.
 declare -a EXCLUDE_IPS=()
 
 _exclude_add() {
     local ip="${1:-}"
     _is_ipv4 "$ip" || return 0
     case "$ip" in
-        0.*|127.*|169.254.*) ;;
+        0.*|127.*|169.254.*) return 0 ;;
     esac
     EXCLUDE_IPS+=("$ip")
 }
@@ -1314,8 +437,6 @@ _is_internal_noise() {
 
 touch "$LOG_FILE"
 
-# LOGGING
-
 declare -a LOG_ENTRIES=()
 
 log() {
@@ -1339,38 +460,31 @@ log() {
     esac
     echo -e "${color}[$level]${CN} $msg"
 }
-# Convenience wrappers
 log_ok()   { log "$1" "OK"; }
 log_warn() { log "$1" "WARN"; }
 log_err()  { log "$1" "ERROR"; }
 
 _build_exclude_ips
-local _ewnaf_local_ips_count=0 _ewnaf_local_cidrs_count=0
+_ewnaf_local_ips_count=0
+_ewnaf_local_cidrs_count=0
 [[ ${#LOCAL_IPS[@]} -ge 0 ]] && _ewnaf_local_ips_count=${#LOCAL_IPS[@]}
 [[ ${#LOCAL_CIDRS[@]} -ge 0 ]] && _ewnaf_local_cidrs_count=${#LOCAL_CIDRS[@]}
 log "LOCAL_FOOTPRINT: host=${LOCAL_HOSTNAME:-unknown}, local_ips=${_ewnaf_local_ips_count}, local_cidrs=${_ewnaf_local_cidrs_count}" "INFO"
 if [[ -n "${EWNAF_MINISERVER_URL:-}" ]]; then
-    log "Mini-serwer kontrolny aktywny: ${EWNAF_MINISERVER_URL}" "INFO"
+    log "Control miniserver active: ${EWNAF_MINISERVER_URL}" "INFO"
 fi
 
-
 progress() { [[ $QUIET -eq 1 ]] && return; echo -ne "\r${CC}[SCAN]${CN} $1                    "; }
-
-# HELPERS
 
 declare -A T=()
 _is_int() { [[ "${1:-}" =~ ^-?[0-9]+$ ]]; }
 
-# Safe array element fetch (works with set -u)
-# Usage: _a_get ARRAYNAME KEY  -> echoes value or empty
 _a_get() {
     local arr="$1" key="$2"
     eval 'echo "${'"$arr"'[$key]:-}"'
 }
 
-# Deterministic helpers
 _sort_ips() {
-    # Reads IPs from args, outputs sorted list one per line
     printf '%s\n' "$@" | awk -F. 'NF==4{printf "%03d.%03d.%03d.%03d %s\n",$1,$2,$3,$4,$0}' | sort | awk '{print $2}'
 }
 
@@ -1404,26 +518,41 @@ _dns_is_block() {
     esac
 }
 
-# Safe TTL extract from ping output.
-# Returns empty string if TTL not present (distinguish "missing" vs numeric 0).
+_external_dns_refs() {
+    local -a refs=()
+    local ns=""
+    if [[ -n "${EXT_DNS_SECONDARY:-}" ]]; then refs+=("${EXT_DNS_SECONDARY}"); fi
+    if [[ -n "${EXT_DNS_PRIMARY:-}" ]]; then refs+=("${EXT_DNS_PRIMARY}"); fi
+
+    if [[ ${#refs[@]} -lt 2 ]] && [[ -r /etc/resolv.conf ]]; then
+        while read -r _kw ns _rest; do
+            [[ "$_kw" == "nameserver" ]] || continue
+            _is_ipv4 "$ns" || continue
+            case "$ns" in
+                127.*|0.*|169.254.*) continue ;;
+            esac
+            refs+=("$ns")
+            (( ${#refs[@]} >= 2 )) && break
+        done < /etc/resolv.conf
+    fi
+
+    if [[ ${#refs[@]} -lt 2 ]] && [[ -n "${TOPO[real_gateway]:-}" ]]; then
+        refs+=("${TOPO[real_gateway]}")
+    fi
+
+    if [[ ${#refs[@]} -lt 2 ]] && [[ -n "${INTERNAL_DNS:-}" ]]; then
+        refs+=("${INTERNAL_DNS}")
+    fi
+
+    printf '%s\n' "${refs[@]}" | awk 'NF' | awk '!seen[$0]++' | head -2
+}
+
 _ping_ttl() {
     local ip="$1"
     local out ttl
     out=$(ping -c1 -W1 "$ip" 2>/dev/null || true)
     ttl=$(grep -oP 'ttl=\K[0-9]+' <<< "$out" | head -1 || true)
     echo "${ttl:-}"
-}
-
-
-_is_ipv4() {
-    local ip="${1:-}" IFS=.
-    [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
-    read -r a b c d <<< "${ip//./ }"
-    for o in "$a" "$b" "$c" "$d"; do
-        [[ "$o" =~ ^[0-9]+$ ]] || return 1
-        (( o >= 0 && o <= 255 )) || return 1
-    done
-    return 0
 }
 
 _is_cidr() {
@@ -1500,7 +629,6 @@ hound_seed_scope() {
     local raw="${1:-}" token resolved_ip
     HOUND_SCOPE=()
 
-    # CSV, whitespace and newline tolerant
     raw="${raw//;/,}"
     while IFS= read -r token; do
         token="${token#"${token%%[![:space:]]*}"}"
@@ -1536,13 +664,11 @@ hound_seed_scope() {
     return 1
 }
 
-
 hound_discover_enterprise_scope() {
     local -a seeds=()
     local line dst ip
     declare -A seen=()
 
-    # 1) Routing hints: tylko prefiksy osiągalne, bez użycia ich jako raportowanej "prawdy"
     while read -r line; do
         dst="${line%% *}"
         [[ -n "$dst" ]] || continue
@@ -1552,7 +678,6 @@ hound_discover_enterprise_scope() {
             dst=$(_cidr_canonical "$dst")
             case "${dst#*/}" in
                 0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15)
-                    # zbyt szerokie prefiksy tniemy do /16 jako hint eksploracyjny
                     IFS=. read -r a b c d <<< "${dst%/*}"
                     dst="${a}.${b}.0.0/16"
                     ;;
@@ -1561,7 +686,6 @@ hound_discover_enterprise_scope() {
         fi
     done < <(ip -4 route show 2>/dev/null || true)
 
-    # 2) Neighbor hints: obserwowani sąsiedzi -> /24 scope, bez ekspozycji IP na wyjściu
     while read -r ip _; do
         _is_ipv4 "$ip" || continue
         [[ "$ip" == 127.* || "$ip" == 169.254.* ]] && continue
@@ -1574,7 +698,6 @@ hound_discover_enterprise_scope() {
         awk 'NR>1 && $3!="0x0" {print $1}' /proc/net/arp 2>/dev/null || true
     } | sort -u)
 
-    # 3) Fallback: jeśli routing i neighbor nie dały scope, użyj adresów interfejsów
     if (( ${#seen[@]} == 0 )); then
         while read -r line; do
             local addr="${line%% *}"
@@ -1587,7 +710,6 @@ hound_discover_enterprise_scope() {
         done < <(ip -4 addr show 2>/dev/null | awk '/inet / {print $2}')
     fi
 
-    # 4) Wypisz wyniki
     for dst in "${!seen[@]}"; do
         printf '%s\n' "$dst"
     done | sort -u
@@ -1597,7 +719,7 @@ hound_before_discovery() {
     local raw="${SUBNETS_ARG:-${TOPO[target_subnets]:-}}" joined=""
     if [[ -n "$raw" ]]; then
         if ! hound_seed_scope "$raw"; then
-            log "  [HOUND] Nieprawidłowy ręczny scope. Przechodzę na auto-discovery enterprise." "WARN"
+            log "  [HOUND] Invalid manual scope. Switching to enterprise auto-discovery." "WARN"
         fi
     fi
 
@@ -1606,7 +728,7 @@ hound_before_discovery() {
     fi
 
     if (( ${#HOUND_SCOPE[@]} == 0 )); then
-        log "  [HOUND] Brak auto-odkrytego scope enterprise. Runner i miniserwer są wyłączone z audytu; z tego punktu nie znaleziono legalnego scope enterprise." "WARN"
+        log "  [HOUND] No auto-discovered enterprise scope. Runner and miniserver excluded from audit; no legal enterprise scope found from this vantage point." "WARN"
         return 1
     fi
 
@@ -1615,10 +737,9 @@ hound_before_discovery() {
     joined=$(printf '%s ' "${SUBNETS[@]}")
     joined="${joined% }"
     TOPO[target_subnets]="$joined"
-    log "  [HOUND] Enterprise scope: ${#SUBNETS[@]} segment(y) odkryte automatycznie" "TOPO"
+    log "  [HOUND] Enterprise scope: ${#SUBNETS[@]} segments discovered" "TOPO"
     return 0
 }
-
 
 _tcp_connect_ms() {
     local ip="$1" port="$2" timeout_s="${3:-2}"
@@ -1641,15 +762,6 @@ _tcp_samples_median() {
     _median_int "${vals[@]}"
 }
 
-
-# PROBABILISTYCZNY SILNIK CONFIDENCE — FIREWALL / TARPIT
-#
-# Model: zbiera N pomiarów, liczy medianę + wariancję + ratio vs baseline.
-# Confidence = f(ratio, variance_stability, n_consistent)
-#
-# Wejście:  ip port n_samples timeout_s
-# Wyjście:  "median|variance|n_drop|n_total"
-
 _fw_collect_samples() {
     local ip="$1" port="$2" n="${3:-5}" timeout_s="${4:-2}"
     local -a samples=()
@@ -1662,77 +774,32 @@ _fw_collect_samples() {
     local med var=0 n_drop=0 n_total="${#samples[@]}"
     (( n_total == 0 )) && { echo "0|0|0|0"; return; }
     med=$(_median_int "${samples[@]}")
-    # Variance = max - min
     local mn mx
     mn=$(printf '%s\n' "${samples[@]}" | sort -n | head -1)
     mx=$(printf '%s\n' "${samples[@]}" | sort -n | tail -1)
     _is_int "$mn" && _is_int "$mx" && var=$(( mx - mn ))
-    # n_drop = ile próbek >= 1800ms (faktyczny timeout)
     local s
     for s in "${samples[@]}"; do
-        (( s >= 1500 )) && (( n_drop++ ))  # soft DROP może timeoutować w 1500-1700ms
+        (( s >= 1500 )) && (( n_drop++ ))  
     done
     echo "${med}|${var}|${n_drop}|${n_total}"
 }
 
-# Oblicz confidence DROP policy na podstawie zebranych próbek + baseline
-# Wyjście: conf (0-100), gdzie:
-#   < 60  = za mało dowodów
-#   60-79 = prawdopodobny DROP
-#   80-89 = wysoka pewność
-#   90+   = bardzo wysoka pewność
 _fw_drop_confidence() {
-    # Wrapper — deleguje do centralnego modelu przez _conf_fw_drop()
     _conf_fw_drop "$@"
 }
 
-# Probabilistyczny confidence SSH tarpit
-# Wejście: delay_med delay_var baseline banner_ok (0/1 = baner SSH prawidłowy)
-# Wyjście: conf (0-100)
 _ssh_tarpit_confidence() {
-    # Wrapper — deleguje do centralnego modelu przez _conf_ssh_tarpit()
     _conf_ssh_tarpit "$@"
 }
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  CENTRALNY MODEL CONFIDENCE — ADAPTERY
-#
-#  Każdy adapter tłumaczy surowe dane domenowe na 5 parametrów _conf_calibrate:
-#    observations  — ile razy zmierzono
-#    required      — ile próbek daje pełną pewność w tej domenie
-#    variance      — spójność wyników (0=zawsze to samo, 100=chaos)
-#    repeats       — ile pomiarów potwierdziło hipotezę
-#    has_baseline  — czy mamy punkt odniesienia (0/1)
-#
-#  Progi decyzyjne (>= 65, >= 80 itd.) pozostają w funkcjach wywołujących —
-#  to jest wiedza domenowa, nie silnik.
-# ══════════════════════════════════════════════════════════════════════════════
-
-# CONFIDENCE CALIBRATION MODEL
-#
-# Defensible confidence score oparty na 4 zmiennych:
-#   N  = liczba obserwacji (sample_size)
-#   V  = wariancja / niespójność wyników (0-100, niżej=lepiej)
-#   R  = powtarzalność (ile razy test dał ten sam wynik / N)
-#   B  = stabilność baseline (czy baseline był mierzony, 0|1)
-#
-# Wzór: conf = base × N_factor × (1 - V_penalty) × R_factor × B_factor
-#   base      = 50 (punkt startowy — bez danych nic nie wiemy)
-#   N_factor  = min(1.0, N/required_N)          — rośnie z próbką
-#   V_penalty = V/200                            — kara za zmienność
-#   R_factor  = 0.5 + R/2                        — powtarzalność 0→0.5, 1→1.0
-#   B_factor  = 1.0 jeśli baseline znany, 0.75 jeśli nie
-#
-# Wynik: 0-100 (całkowity, zaokrąglony)
 _conf_calibrate() {
-    local observations="${1:-1}"  # N  — ile razy zmierzono
-    local required="${2:-5}"      # N_req — ile potrzeba do pełnej pewności
-    local variance="${3:-50}"     # V  — 0=zawsze to samo, 100=kompletny chaos
-    local repeats="${4:-1}"       # ile razy z N wyników było zgodnych
+    local observations="${1:-1}"  
+    local required="${2:-5}"      
+    local variance="${3:-50}"     
+    local repeats="${4:-1}"       
     local has_baseline="${5:-0}"  # 1 = mierzono baseline, 0 = nie
 
-    # Ogranicz
     (( observations < 1 ))  && observations=1
     (( required    < 1 ))   && required=1
     (( variance    < 0 ))   && variance=0
@@ -1740,63 +807,45 @@ _conf_calibrate() {
     (( repeats     < 0 ))   && repeats=0
     (( repeats     > observations )) && repeats=$observations
 
-    # N_factor: 0.0→1.0 w miarę zbliżania się do required
-    # Użyj integer: N_factor_pct = min(100, N*100/required)
     local n_factor_pct=$(( observations * 100 / required ))
     (( n_factor_pct > 100 )) && n_factor_pct=100
 
-    # V_penalty_pct = variance / 2   (variance=100 → penalty=50%)
     local v_penalty_pct=$(( variance / 2 ))
 
-    # R_factor_pct: repeats/observations → 50..100
     local r_factor_pct=$(( 50 + repeats * 50 / observations ))
 
-    # B_factor_pct: 100 jeśli baseline, 75 jeśli nie
     local b_factor_pct=75
     (( has_baseline == 1 )) && b_factor_pct=100
 
-    # conf = 50 × (n_factor/100) × (1 - v_penalty/100) × (r_factor/100) × (b_factor/100)
-    # Integer: conf = 50 × n × (100-v) × r × b / 100^3
     local conf
     conf=$(( 50 * n_factor_pct * (100 - v_penalty_pct) * r_factor_pct * b_factor_pct / 100000000 * 2 ))
-    # Uwaga: /100^3 = /1000000, ale mnożymy ×2 żeby skala wychodziła do ~100
 
-    # Normalizuj
     (( conf < 0 ))   && conf=0
     (( conf > 100 )) && conf=100
     echo "$conf"
 }
 
-# Adapter: firewall DROP policy
-# Inputs: med(ms) var(ms) n_drop n_total baseline(ms)
 _conf_fw_drop() {
     local med="$1" var="$2" n_drop="$3" n_total="$4" baseline="$5"
     _is_int "$med" && _is_int "$var" && _is_int "$n_drop" \
         && _is_int "$n_total" && _is_int "$baseline" || { echo 0; return; }
     (( n_total == 0 || baseline == 0 )) && { echo 0; return; }
 
-    # variance ms → 0-100: 0ms=stabilny(0), 2000ms+=chaos(100)
     local v_norm=$(( var * 100 / 2000 ))
     (( v_norm > 100 )) && v_norm=100
 
-    # ratio sygnału: ile razy mediana > baseline
-    # Konwertujemy ratio na "ile próbek jakościowych" (repeats bonus)
     local ratio=$(( med * 100 / baseline ))
     local ratio_bonus=0
     (( ratio >= 600  )) && ratio_bonus=1
     (( ratio >= 1000 )) && (( ratio_bonus++ ))
     (( ratio >= 1800 )) && (( ratio_bonus++ ))
-    # mediana absolutna >= 1800ms = dodatkowe potwierdzenie
     (( med >= 1800 )) && (( ratio_bonus++ ))
-    # repeats = n_drop + ratio_bonus, cap at n_total
     local effective_repeats=$(( n_drop + ratio_bonus ))
     (( effective_repeats > n_total )) && effective_repeats=$n_total
 
     _conf_calibrate "$n_total" 5 "$v_norm" "$effective_repeats" 1
 }
 
-# Adapter: SSH tarpit
-# Inputs: med(ms) var(ms) baseline(ms) banner_ok(0/1)
 _conf_ssh_tarpit() {
     local med="$1" var="$2" baseline="$3" banner_ok="${4:-0}"
     _is_int "$med" && _is_int "$var" && _is_int "$baseline" || { echo 0; return; }
@@ -1806,67 +855,50 @@ _conf_ssh_tarpit() {
     (( v_norm > 100 )) && v_norm=100
 
     local ratio=$(( med * 100 / baseline ))
-    # Repeats: kumulatywne potwierdzenia hipotezy tarpitu
     local reps=0
     (( ratio >= 500  )) && (( reps++ ))
     (( ratio >= 1000 )) && (( reps++ ))
     (( ratio >= 2000 )) && (( reps++ ))
     (( med >= 2500   )) && (( reps++ ))
     (( med >= 5000   )) && (( reps++ ))
-    # Banner: brak prawidłowego SSH bannera = silny sygnał
     (( banner_ok == 0 )) && (( reps++ ))
-    # Prawidłowy banner = słabszy sygnał (cofnij jeden repeat)
     (( banner_ok == 1 && reps > 0 )) && (( reps-- ))
-    # required=6 (suma możliwych potwierdzeń powyżej)
     local required=6
     (( reps > required )) && reps=$required
 
     _conf_calibrate 3 "$required" "$v_norm" "$reps" 1
 }
 
-# Adapter: IDS / rate limiting
-# Inputs: base_gw(ms) post_gw(ms) var_ms(ms) ext_spiked(0/1)
 _conf_ids_ratelimit() {
     local base_gw="$1" post_gw="$2" var_ms="$3" ext_spiked="${4:-0}"
     _is_int "$base_gw" && _is_int "$post_gw" && _is_int "$var_ms" || { echo 0; return; }
     (( base_gw == 0 )) && { echo 0; return; }
 
-    # variance ms → 0-100 (500ms = duży jitter dla IDS = 100%)
     local v_norm=$(( var_ms * 100 / 500 ))
     (( v_norm > 100 )) && v_norm=100
 
-    # repeats: ile z 5 próbek potwierdziło throttling
     local ratio=$(( post_gw * 100 / base_gw ))
     local reps=0
-    # ratio >= 350% (3.5x) = podstawowe potwierdzenie
     (( ratio >= 350 && post_gw > 400 )) && reps=3
-    # ratio >= 500% (5x) = silne potwierdzenie
     (( ratio >= 500 )) && reps=4
-    # stabilność (niska wariancja) = dodatkowe potwierdzenie
     (( v_norm < 60 && reps > 0 )) && (( reps++ ))
-    # ext kontrola stabilna = eliminuje ISP lag
     (( ext_spiked == 0 && reps > 0 )) && (( reps++ ))
     (( reps > 5 )) && reps=5
 
     _conf_calibrate 5 5 "$v_norm" "$reps" 1
 }
 
-# Adapter: DNS filtering
-# Inputs: n_blocked n_observed
 _conf_dns_filter() {
     local n_blocked="$1" n_obs="$2"
     _is_int "$n_blocked" && _is_int "$n_obs" || { echo 0; return; }
     (( n_obs == 0 )) && { echo 0; return; }
 
-    # variance: niespójność — jeśli 100% blokowane, wariancja=0
     local pct_blocked=$(( n_blocked * 100 / n_obs ))
     local v_norm=$(( 100 - pct_blocked ))
 
     _conf_calibrate "$n_obs" 10 "$v_norm" "$n_blocked" 1
 }
 
-# Adapter: L3 silent DROP
-# Inputs: delta(ms) baseline(ms)
 _conf_l3_silent_drop() {
     local delta="$1" baseline="$2"
     _is_int "$delta" && _is_int "$baseline" || { echo 0; return; }
@@ -1876,49 +908,34 @@ _conf_l3_silent_drop() {
     local reps=0
     (( delta >= 2000 && ratio >= 400 )) && reps=1
     (( delta >= 3000 && ratio >= 400 )) && (( reps++ ))
-    # Tylko 1 próbka → wysoka wariancja (nie wiemy czy powtarzalne)
     _conf_calibrate 1 3 70 "$reps" 1
 }
 
-# Adapter: L3 east-west reachability
-# Inputs: flat_total flat_hits
 _conf_l3_east_west() {
     local flat_total="$1" flat_hits="$2"
     _is_int "$flat_total" && _is_int "$flat_hits" || { echo 0; return; }
     (( flat_total == 0 )) && { echo 0; return; }
 
-    # Brak baseline — nie wiemy jaki powinien być wynik (sieć flat vs segmented)
-    # variance=0 bo wynik binarny (widzi/nie widzi) na każdej parze
     _conf_calibrate "$flat_total" 12 0 "$flat_hits" 0
 }
 
-# Adapter: DNS leak
-# Inputs: udp_ok tcp_ok n_tested
 _conf_dns_leak() {
     local udp_ok="$1" tcp_ok="$2" n_tested="${3:-4}"
     _is_int "$udp_ok" && _is_int "$tcp_ok" && _is_int "$n_tested" || { echo 0; return; }
 
     local total_tests=$(( n_tested * 2 ))
     local total_ok=$(( udp_ok + tcp_ok ))
-    # variance: leak jest spójny (mało zmienności)
     local v_norm=20
     _conf_calibrate "$total_tests" 8 "$v_norm" "$total_ok" 1
 }
 
-# Adapter: TLS interception
-# Inputs: issuer_match(0/1) san_delta(-1..N) n_checks
-# issuer_match=0: issuery różne (silny sygnał MITM)
-# san_delta: v_san - d_san (ujemny = intercepcja redukuje SAN)
 _conf_tls_intercept() {
     local issuer_match="${1:-1}" san_delta="${2:-0}" n_checks="${3:-3}"
     _is_int "$issuer_match" && _is_int "$san_delta" && _is_int "$n_checks" || { echo 0; return; }
 
     local reps=0
-    # Różne issuery = mocny sygnał
     (( issuer_match == 0 )) && (( reps += 2 ))
-    # san_delta < 0 = intercepcja zmniejsza SAN (typowe dla MITM proxy)
     (( san_delta < 0 )) && (( reps++ ))
-    # variance: jeśli issuer różny = spójny sygnał (niska wariancja)
     local v_norm=30
     (( issuer_match == 0 )) && v_norm=10
 
@@ -1926,9 +943,6 @@ _conf_tls_intercept() {
     _conf_calibrate "$n_checks" "$n_checks" "$v_norm" "$reps" 1
 }
 
-
-# Zwraca 0 = OPEN, 1 = CLOSED/FILTERED
-# Zmienna globalna _PP_STATE = OPEN|CLOSED|FILTERED
 probe_port() {
     local ip="$1" port="$2" timeout_s="${3:-1}"
     local t1 t2 delta rc
@@ -1945,25 +959,19 @@ probe_port() {
     if [[ $rc -eq 0 ]]; then
         _PP_STATE="OPEN"; return 0
     elif (( delta < 800 )); then
-        # RST zwrócony szybko = port CLOSED (host żywy, port zamknięty)
         _PP_STATE="CLOSED"; return 1
     else
-        # Timeout = DROP policy (FILTERED)
         _PP_STATE="FILTERED"; return 1
     fi
 }
 
-# Adaptacyjny port scan: wykrywa DROP policy po pierwszych portach
-# i skraca listę/timeout jeśli host w ogóle nie odpowiada (czysty DROP)
 probe_port_adaptive() {
     local ip="$1" port="$2" timeout_s="${3:-1}"
-    # Jeśli host znany jako DROP-only: użyj krótszego timeoutu
     if [[ "${_ADAPTIVE_DROP[$ip]:-0}" == "1" ]]; then
         timeout_s="0.4"
     fi
     probe_port "$ip" "$port" "$timeout_s"
     local rc=$?
-    # Kalibracja: 3 FILTERED z rzędu = oznacz jako DROP host
     if [[ "${_PP_STATE:-}" == "FILTERED" ]]; then
         _ADAPTIVE_FILTERED[$ip]=$(( ${_ADAPTIVE_FILTERED[$ip]:-0} + 1 ))
         (( ${_ADAPTIVE_FILTERED[$ip]} >= 3 )) && _ADAPTIVE_DROP[$ip]="1"
@@ -1974,7 +982,6 @@ probe_port_adaptive() {
     return $rc
 }
 
-# Escape do HTML (chroni raport przed XSS z PTR/bannerów/opisów)
 html_esc() {
     local s="${1:-}"
     local _sq=$'\''
@@ -1987,8 +994,6 @@ html_esc() {
     echo "$s"
 }
 
-
-# HEURISTICS HELPERS (precision v2)
 _dig_classify() {
     local resolver="$1" domain="$2" use_tcp="${3:-0}"
     [[ -z "${T[dig]:-}" ]] && echo "UNKNOWN" && return
@@ -2033,7 +1038,6 @@ _tls_fp_openssl() {
 }
 
 _tls_issuer_san() {
-    # Zwraca "issuer|san_count" dla danego połączenia
     local host="$1" resolve_ip="${2:-}" port="${3:-443}" sni="${4:-$1}"
     [[ -z "${T[openssl]:-}" ]] && echo "|0" && return
     local target="$host:$port"
@@ -2044,7 +1048,6 @@ _tls_issuer_san() {
     [[ -z "$cert" ]] && echo "|0" && return
     local issuer san_count
     issuer=$(echo "$cert" | ${T[openssl]} x509 -noout -issuer 2>/dev/null | sed 's/issuer= *//' | head -1 || echo "")
-    # Wyciągnij CN issuera (Organization lub Common Name)
     issuer=$(echo "$issuer" | grep -oP 'O\s*=\s*\K[^,]+' | head -1 | tr -d ' ' || echo "$issuer" | head -c 60)
     san_count=$(echo "$cert" | ${T[openssl]} x509 -noout -text 2>/dev/null | grep -c "DNS:" || echo "0")
     echo "${issuer:-unknown}|${san_count:-0}"
@@ -2057,7 +1060,6 @@ _doh_json_ok() {
     r=$(curl -sk --max-time 4 -H 'accept: application/dns-json' "$url" 2>/dev/null | head -c 400 || true)
     echo "$r" | grep -qiE '"Status"[[:space:]]*:[[:space:]]*0|"Answer"[[:space:]]*:' && echo "1" || echo "0"
 }
-
 
 grab_banner() {
     local ip="$1" port="$2" timeout_s="${3:-3}" send="${4:-}"
@@ -2084,21 +1086,35 @@ get_http_headers() {
     curl -skI --max-time "$timeout_s" "$url" 2>/dev/null | tr -d '\r' | head -20 || echo ""
 }
 
-declare -A _ADAPTIVE_DROP=()      # ip → "1" jeśli host ma DROP policy
-declare -A _ADAPTIVE_FILTERED=()  # ip → liczba consecutive FILTERED
+declare -A _ADAPTIVE_DROP=()      
+declare -A _ADAPTIVE_FILTERED=()  
 
 scan_ports_parallel() {
     local ip="$1" port_list="$2" max_j="${3:-$MAX_PARALLEL}" to="${4:-1}"
     local tmp; tmp=$(mktemp -d)
     local active=0
     for port in $port_list; do
-        ( probe_port_adaptive "$ip" "$port" "$to" && touch "$tmp/$port" ) &
+        (
+            probe_port_adaptive "$ip" "$port" "$to" && touch "$tmp/$port"
+            echo "${_PP_STATE:-UNKNOWN}" > "$tmp/${port}.state"
+            echo "${_ADAPTIVE_FILTERED[$ip]:-0}" > "$tmp/${port}.filt"
+        ) &
         (( active++ ))
         if (( active >= max_j )); then wait; active=0; fi
     done
     wait
-    local open=""
-    for port in $port_list; do [[ -f "$tmp/$port" ]] && open="$open $port"; done
+    local open="" filtered_count=0
+    for port in $port_list; do
+        [[ -f "$tmp/$port" ]] && open="$open $port"
+        if [[ -f "$tmp/${port}.state" ]]; then
+            local st; st=$(<"$tmp/${port}.state")
+            [[ "$st" == "FILTERED" ]] && (( filtered_count++ ))
+        fi
+    done
+    if (( filtered_count >= 3 )); then
+        _ADAPTIVE_DROP[$ip]="1"
+    fi
+    _ADAPTIVE_FILTERED[$ip]="$filtered_count"
     rm -rf "$tmp"
     echo "${open# }"
 }
@@ -2106,9 +1122,6 @@ scan_ports_parallel() {
 contains_port() { echo " $1 " | grep -qw "$2"; }
 port_count()    { [[ -z "$1" ]] && echo 0 || echo "$1" | wc -w; }
 
-# [0] TOPOLOGY PROBE — heurystyczna analiza topologii PRZED audytem
-
-# Globalne wyniki topologii
 declare -A TOPO=(
     [vpn_detected]="0"
     [vpn_type]=""
@@ -2140,6 +1153,8 @@ declare -A TOPO=(
 
 declare -a TOPO_WARNINGS=()
 declare -a SECURITY_SYSTEMS=()
+declare -A SESSION_STATE=()
+declare -A TRAFFIC_POLICY=()
 
 topo_detect_vpn() {
     local vpn_ifaces="" vpn_type=""
@@ -2150,7 +1165,7 @@ topo_detect_vpn() {
         TOPO[vpn_detected]="1"
         TOPO[vpn_type]="WireGuard"
         TOPO[vpn_interface]="$vpn_ifaces"
-        log "  [!] WireGuard VPN wykryty: $vpn_ifaces" "TOPO"
+        log "  [!] WireGuard VPN detected: $vpn_ifaces" "TOPO"
     fi
 
     if ip link show 2>/dev/null | grep -qE "tun[0-9]|tap[0-9]"; then
@@ -2159,29 +1174,30 @@ topo_detect_vpn() {
         TOPO[vpn_detected]="1"
         TOPO[vpn_type]="${TOPO[vpn_type]:-}${TOPO[vpn_type]:+,}OpenVPN"
         TOPO[vpn_interface]="${TOPO[vpn_interface]:-}${TOPO[vpn_interface]:+ }$vpn_ifaces"
-        log "  [!] OpenVPN/TUN VPN wykryty: $vpn_ifaces" "TOPO"
+        log "  [!] OpenVPN/TUN VPN detected: $vpn_ifaces" "TOPO"
     fi
 
     if ip link show 2>/dev/null | grep -qE "ppp[0-9]"; then
         TOPO[vpn_detected]="1"
         TOPO[vpn_type]="${TOPO[vpn_type]:-}${TOPO[vpn_type]:+,}PPP"
-        log "  [!] PPP tunnel wykryty" "TOPO"
+        log "  [!] PPP tunnel detected" "TOPO"
     fi
 
     local vpn_routes=""
     vpn_routes=$(ip route show 2>/dev/null | grep -E "wg|tun|tap|ppp" | head -5 || true)
     if [[ -n "$vpn_routes" ]]; then
         TOPO[vpn_detected]="1"
-        log "  [!] VPN routes w tablicy routingu: $vpn_routes" "TOPO"
+        log "  [!] VPN routes detected in routing table" "TOPO"
     fi
 
-    if pgrep -x "wg\|openvpn\|wireguard" > /dev/null 2>&1; then
+    if pgrep -x "wg" >/dev/null 2>&1 || pgrep -x "openvpn" >/dev/null 2>&1 || pgrep -x "wireguard-go" >/dev/null 2>&1; then
         TOPO[vpn_detected]="1"
-        log "  [!] Proces VPN uruchomiony" "TOPO"
+        log "  [!] VPN process running" "TOPO"
     fi
 }
 
 topo_detect_wan() {
+    [[ "$MODE" == "passive" ]] && return 0
     [[ -z "${T[curl]:-}" ]] && return
 
     local ip1 ip2 ip3
@@ -2198,19 +1214,19 @@ topo_detect_wan() {
     done
 
     if [[ -n "${TOPO[true_wan_ip]}" ]]; then
-        log "  [i] Zewnętrzny IP: ${TOPO[true_wan_ip]}" "TOPO"
+        log "  [i] External IP: [detected — masked in report]" "TOPO"
         local wan="${TOPO[true_wan_ip]}"
         if echo "$wan" | grep -qE "^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)"; then
-            TOPO[vpn_detected]="1"
             TOPO[vpn_wan_ip]="$wan"
             TOPO[double_nat]="1"
-            log "  [!] WAN IP jest RFC1918 — podwójny NAT lub VPN gateway" "TOPO"
-            TOPO_WARNINGS+=("DOUBLE_NAT: WAN IP $wan jest prywatny — audyt WAN będzie niedokładny")
+            log "  [i] WAN IP is RFC1918 — possible double NAT, carrier-grade NAT, or VPN gateway" "TOPO"
+            TOPO_WARNINGS+=("DOUBLE_NAT: WAN IP is private — WAN audit may be inaccurate")
         fi
     fi
 }
 
 topo_detect_nat() {
+    [[ "$MODE" == "passive" ]] && return 0
     local gw_ip
     gw_ip=$(ip route show default 2>/dev/null | awk '/default via/ {print $3}' | head -1 || echo "")
     [[ -z "$gw_ip" ]] && return
@@ -2220,39 +1236,35 @@ topo_detect_nat() {
 
     if [[ -n "${T[traceroute]:-}" ]]; then
         local hops
-        hops=$(traceroute -n -w1 -q1 -m5 "$EXT_DNS_PRIMARY" 2>/dev/null | grep -cE '^\s*[0-9]' || echo "0")
+        hops=$(traceroute -n -w1 -q1 -m5 "${TOPO[real_gateway]:-8.8.8.8}" 2>/dev/null | grep -cE '^\s*[0-9]' || echo "0")
         nat_count=$hops
-        log "  [i] Hopów do internetu: $hops" "TOPO"
+        log "  [i] Hops to internet: $hops" "TOPO"
         if (( hops > 5 )); then
-            log "  [!] Wiele hopów ($hops) — możliwe podwójne NAT lub VPN chain (ISP norma: 4-5)" "TOPO"
+            log "  [!] Many hops ($hops) — possible double NAT or VPN chain (ISP norm: 4-5)" "TOPO"
         elif (( hops > 3 )); then
-            log "  [i] $hops hopów do internetu (norma ISP)" "TOPO"
+            log "  [i] $hops hops to internet (ISP norm)" "TOPO"
         fi
     fi
     TOPO[nat_layers]="$nat_count"
 }
 
-# IDS/Rate-limit detection — probabilistyczny model z confidence
-# Wymaga: n_gw >= 3 próbek ORAZ ratio >= 3.5x GW ORAZ ext kontrola stabilna
 topo_detect_ids() {
+    [[ "$MODE" == "passive" ]] && return 0
     local gw="${TOPO[real_gateway]:-}"
     [[ -z "$gw" ]] && return
 
-    local ext_ip="$EXT_CTRL_HOST2"
+    local ext_ip="${EXT_CTRL_HOST2:-1.1.1.1}"
     local base_gw post_gw base_ext post_ext
 
-    # Zbierz bazowe próbki (5 dla GW, 4 dla ext)
     base_gw=$(_tcp_samples_median "$gw" 80 5 2)
     base_ext=$(_tcp_samples_median "$ext_ip" 443 4 2)
 
-    # Stymulacja: 10 szybkich połączeń
     local k
     for (( k=0; k<10; k++ )); do
         timeout 1 bash -c "exec 3<>/dev/tcp/$gw/80 && exec 3>&-" 2>/dev/null || true
     done
     sleep 0.25
 
-    # Próbki po stymulacji (5 dla GW, 4 dla ext)
     post_gw=$(_tcp_samples_median "$gw" 80 5 2)
     post_ext=$(_tcp_samples_median "$ext_ip" 443 4 2)
 
@@ -2261,7 +1273,6 @@ topo_detect_ids() {
     _is_int "$base_ext" || base_ext=0
     _is_int "$post_ext" || post_ext=0
 
-    # Zbierz variance GW: kilka dodatkowych próbek post-burst dla stabilności
     local -a _ids_post_samples=()
     local _idsi _idsd
     for (( _idsi=0; _idsi<3; _idsi++ )); do
@@ -2279,7 +1290,6 @@ topo_detect_ids() {
 
     if (( base_gw > 0 && post_gw > 0 )); then
         local gw_tripled=0 ext_spiked=0
-        # Wymagaj: ratio >= 3.5x ORAZ post_gw > 400ms (eliminuje wolny router z jitterem)
         (( post_gw > base_gw * 35/10 && post_gw > 400 )) && gw_tripled=1
         (( base_ext > 0 && post_ext > base_ext * 2 && post_ext > 500 )) && ext_spiked=1
 
@@ -2289,21 +1299,28 @@ topo_detect_ids() {
             _is_int "$_rl_conf" || _rl_conf=0
             TOPO[ids_detected]="1"
             TOPO[ids_conf]="$_rl_conf"
-            SECURITY_SYSTEMS+=("Rate Limiting/IDS: throttling GW (${base_gw}→${post_gw}ms, var=${_ids_var}ms, pewność ${_rl_conf}%)")
-            log "  [✓] Throttling na gateway — możliwy IDS/IPS (GW ${base_gw}→${post_gw}ms, var=${_ids_var}ms, conf=${_rl_conf}%)" "TOPO"
+            SECURITY_SYSTEMS+=("Rate Limiting/IDS: throttling GW (${base_gw}→${post_gw}ms, var=${_ids_var}ms, confidence ${_rl_conf}%)")
+            log "  [✓] Throttling on gateway — possible IDS/IPS (GW ${base_gw}→${post_gw}ms, var=${_ids_var}ms, conf=${_rl_conf}%)" "TOPO"
         fi
     fi
 }
 
-# DNS filtering detection
 topo_detect_dns_filter() {
+    [[ "$MODE" == "passive" ]] && return 0
     local gw="${TOPO[real_gateway]:-}"
     [[ -z "$gw" ]] && return
     [[ -z "${T[dig]:-}" ]] && return
 
-    local _resolver="${INTERNAL_DNS:-${TOPO[real_gateway]:-}}"
-    [[ -z "$_resolver" ]] && _resolver="$EXT_DNS_PRIMARY"
-    local _ref1="$EXT_DNS_SECONDARY" _ref2="$EXT_DNS_PRIMARY"
+local _resolver="${INTERNAL_DNS:-${TOPO[real_gateway]:-}}"
+local _ref1="" _ref2=""
+mapfile -t _dns_refs < <(_external_dns_refs)
+[[ ${#_dns_refs[@]} -ge 1 ]] && _ref1="${_dns_refs[0]}"
+[[ ${#_dns_refs[@]} -ge 2 ]] && _ref2="${_dns_refs[1]}"
+[[ -z "$_resolver" ]] && _resolver="${_ref1:-${TOPO[real_gateway]:-}}"
+[[ -z "$_resolver" || -z "$_ref1" || -z "$_ref2" ]] && {
+    log "  [i] DNS filtering: insufficient external reference resolvers — result unavailable"
+    return
+}
 
     local _dns_test_domains=(
         "doubleclick.net"
@@ -2338,31 +1355,28 @@ topo_detect_dns_filter() {
         _is_int "$_dns_conf" || _dns_conf=0
         if (( _dns_conf >= 65 )); then
             TOPO[dns_filter_detected]="1"
-            SECURITY_SYSTEMS+=("DNS Filtering: aktywny (${_dns_blk}/${_dns_obs} domen, pewność ${_dns_conf}%)")
-            log "  [✓] DNS Filtering wykryty (${_dns_blk}/${_dns_obs}, pewność ${_dns_conf}%)" "TOPO"
+            SECURITY_SYSTEMS+=("DNS Filtering: active (${_dns_blk}/${_dns_obs} domains, confidence ${_dns_conf}%)")
+            log "  [✓] DNS Filtering detected (${_dns_blk}/${_dns_obs}, confidence ${_dns_conf}%)" "TOPO"
         else
-            log "  [i] DNS Filtering: słaby sygnał (${_dns_blk}/${_dns_obs} domen — ${_dns_pct}%)"
+            log "  [i] DNS filtering: weak signal (${_dns_blk}/${_dns_obs} domains — ${_dns_pct}%)"
         fi
     else
-        log "  [i] DNS Filtering: za mała próbka ($_dns_obs domen dostępnych) — wynik niedostępny"
+        log "  [i] DNS Filtering: insufficient sample ($_dns_obs domains available) — result unavailable"
     fi
 }
 
-# SSH Tarpit detection — behawioralne, z twardym progiem median >= 2500ms
-# Wymaga: n_samples >= 3, median >= 2500ms lub ratio >= 800% baseline
 topo_detect_ssh_tarpit() {
+    [[ "$MODE" == "passive" ]] && return 0
     local gw="${TOPO[real_gateway]:-}"
     [[ -z "$gw" ]] && return
     probe_port "$gw" 22 1 || return
 
-    # Baseline TCP (port 80 lub 443 — eliminuje wolny router)
     local _ssh_base
     _ssh_base=$(_tcp_connect_ms "$gw" 80 1)
     _is_int "$_ssh_base" || _ssh_base=$(_tcp_connect_ms "$gw" 443 1)
     _is_int "$_ssh_base" || _ssh_base=30
     (( _ssh_base < 5 )) && _ssh_base=5
 
-    # Próbka 1: banner read (mierzy czas do pierwszego bajtu — endlessh opóźnia to celowo)
     local _ssh_t1 _ssh_t2 _ssh_d _ssh_banner=""
     _ssh_t1=$(date +%s%3N)
     _ssh_banner=$(timeout 4 bash -c \
@@ -2371,7 +1385,6 @@ topo_detect_ssh_tarpit() {
     _ssh_t2=$(date +%s%3N)
     _ssh_d=$(( _ssh_t2 - _ssh_t1 ))
 
-    # Próbki 2 i 3: connect-only (szybsze, bez czekania na banner)
     local -a _ssh_samples=("$_ssh_d")
     local _ssh_t3 _ssh_t4 _ssh_t5 _ssh_t6 _ssh_s2 _ssh_s3
     sleep 0.2
@@ -2403,8 +1416,6 @@ topo_detect_ssh_tarpit() {
         _banner_ok=1
     fi
 
-    # Wymagaj: n_samples >= 3 ORAZ (median >= 2500ms LUB ratio >= 800%)
-    # Endlessh z małym delay może osiągnąć 1500ms - próg 2500ms eliminuje wolne routery
     local _n_ok=0
     (( ${#_ssh_samples[@]} >= 3 )) && _n_ok=1
 
@@ -2413,8 +1424,6 @@ topo_detect_ssh_tarpit() {
         _ssh_conf=$(_ssh_tarpit_confidence "$_ssh_med" "$_ssh_var" "$_ssh_base" "$_banner_ok")
         _is_int "$_ssh_conf" || _ssh_conf=0
 
-        # Hard floor: jeśli median < 2500ms I ratio < 800% — obniż confidence
-        # Chroni przed false positive na wolnym routerze embedded
         if (( _ssh_med < 2500 && _ssh_ratio < 800 )); then
             (( _ssh_conf = _ssh_conf * 70 / 100 ))
         fi
@@ -2422,15 +1431,15 @@ topo_detect_ssh_tarpit() {
 
     if (( _ssh_conf >= 85 )); then
         TOPO[honeypot_detected]="1"
-        SECURITY_SYSTEMS+=("SSH Tarpit: aktywny (med=${_ssh_med}ms, ratio=${_ssh_ratio}%, n=${#_ssh_samples[@]}, pewność=${_ssh_conf}%)")
+        SECURITY_SYSTEMS+=("SSH Tarpit: active (med=${_ssh_med}ms, ratio=${_ssh_ratio}%, n=${#_ssh_samples[@]}, confidence=${_ssh_conf}%)")
         log "  [✓] SSH Tarpit GW:22 — delay=${_ssh_d}ms base=${_ssh_base}ms ratio=${_ssh_ratio}% med=${_ssh_med}ms" "TOPO"
     else
-        log "  [i] SSH port 22 — med=${_ssh_med}ms base=${_ssh_base}ms ratio=${_ssh_ratio}% conf=${_ssh_conf}% (nie tarpit)" "TOPO"
+        log "  [i] SSH port 22 — med=${_ssh_med}ms base=${_ssh_base}ms ratio=${_ssh_ratio}% conf=${_ssh_conf}% (not tarpit)" "TOPO"
     fi
 }
 
-# Auto-ban detection: sondujemy nieistniejący port, potem sprawdzamy czy GW nadal odpowiada
 topo_detect_autoban() {
+    [[ "$MODE" == "passive" ]] && return 0
     local gw="${TOPO[real_gateway]:-}"
     [[ -z "$gw" ]] && return
 
@@ -2444,13 +1453,13 @@ topo_detect_autoban() {
 
     if [[ "$_ab_ok" == "0" ]]; then
         TOPO[autoban_detected]="1"
-        SECURITY_SYSTEMS+=("Auto-ban IPS: aktywny (GW zablokował IP po sondzie, pewność 88%)")
-        log "  [✓] Auto-ban wykryty na GW (host niedostępny po próbie)" "TOPO"
+        SECURITY_SYSTEMS+=("Auto-ban IPS: active (GW blocked IP after probe, confidence 88%)")
+        log "  [✓] Auto-ban detected on GW (host unreachable after probe)" "TOPO"
     fi
 }
 
-# Firewall fingerprint — probabilistyczny model DROP/REJECT (istniejąca logika, bez zmian)
 topo_detect_firewall() {
+    [[ "$MODE" == "passive" ]] && return 0
     local gw_fw="${TOPO[real_gateway]:-}"
     [[ -z "$gw_fw" ]] && return
 
@@ -2486,33 +1495,31 @@ topo_detect_firewall() {
 
     if (( _fw_conf >= 80 )); then
         TOPO[firewall_type]="stateful-DROP"
-        SECURITY_SYSTEMS+=("Stateful firewall: DROP policy (med=${_fw_med}ms, base=${_fw_baseline}ms, pewność=${_fw_conf}%)")
-        log "  [✓] Stateful DROP firewall na GW (pewność=${_fw_conf}%)" "TOPO"
+        SECURITY_SYSTEMS+=("Stateful firewall: DROP policy (med=${_fw_med}ms, base=${_fw_baseline}ms, confidence=${_fw_conf}%)")
+        log "  [✓] Stateful DROP firewall on GW (confidence=${_fw_conf}%)" "TOPO"
     elif (( _fw_conf >= 60 )); then
         TOPO[firewall_type]="probable-DROP"
-        SECURITY_SYSTEMS+=("Firewall: możliwy DROP (med=${_fw_med}ms, pewność=${_fw_conf}% — niska próbka lub duży jitter)")
-        log "  [~] Prawdopodobny DROP firewall — conf=${_fw_conf}% (nierozstrzygnięte)" "TOPO"
+        SECURITY_SYSTEMS+=("Firewall: possible DROP (med=${_fw_med}ms, confidence=${_fw_conf}% — low sample or high jitter)")
+        log "  [~] Probable DROP firewall — conf=${_fw_conf}% (inconclusive)" "TOPO"
     else
         TOPO[firewall_type]="RST/reject"
-        log "  [i] GW REJECT/RST (med=${_fw_med}ms, base=${_fw_baseline}ms, conf=${_fw_conf}% — poniżej progu)" "TOPO"
+        log "  [i] GW REJECT/RST (med=${_fw_med}ms, base=${_fw_baseline}ms, conf=${_fw_conf}% — below threshold)" "TOPO"
     fi
 
     if ping -c1 -W1 "$gw_fw" &>/dev/null 2>&1; then
         TOPO[firewall_type]="${TOPO[firewall_type]}+ICMP-allowed"
     else
         TOPO[firewall_type]="${TOPO[firewall_type]}+ICMP-blocked"
-        SECURITY_SYSTEMS+=("ICMP blocked na GW")
+        SECURITY_SYSTEMS+=("ICMP blocked on GW")
     fi
 }
 
-# Subnet selection — bez zmian logiki
 topo_select_subnets() {
     local target_nets="" skip_nets=""
 
     while IFS= read -r cidr; do
         local net="${cidr%/*}"
         local prefix="${cidr#*/}"
-        # Guard: prefix musi być liczbą całkowitą 1-32 (shift 32 daje UB, prefix="" crashuje)
         _is_int "$prefix" || continue
         (( prefix < 1 || prefix > 32 )) && continue
         IFS='.' read -r a b c d <<< "$net"
@@ -2547,7 +1554,7 @@ topo_select_subnets() {
 
         if (( is_vpn )); then
             skip_nets="$skip_nets $full_net"
-            log "  [!] Pomijam VPN subnet: $full_net (interfejs: ${iface:-unknown})" "TOPO"
+            log "  [!] Skipping VPN subnet: $full_net (iface: ${iface:-unknown})" "TOPO"
         else
             target_nets="$target_nets $full_net"
             log "  [✓] Target subnet: $full_net" "TOPO"
@@ -2558,12 +1565,11 @@ topo_select_subnets() {
     TOPO[skip_subnets]="${skip_nets# }"
 
     if [[ -z "${TOPO[target_subnets]}" ]]; then
-        log "  [!] Brak lokalnych podsieci do skanowania — sprawdź interfejsy" "TOPO"
-        TOPO_WARNINGS+=("NO_SUBNETS: Brak wykrytych podsieci lokalnych")
+        log "  [!] No local subnets to scan — check interfaces" "TOPO"
+        TOPO_WARNINGS+=("NO_SUBNETS: No local subnets detected")
     fi
 }
 
-# Scan recommendation — bez zmian logiki
 topo_scan_recommendation() {
     local rec="STANDARD"
     [[ "${TOPO[vpn_detected]}" == "1" ]] && rec="VPN_AWARE"
@@ -2572,7 +1578,6 @@ topo_scan_recommendation() {
     TOPO[scan_recommendation]="$rec"
 }
 
-# Topology report — bez zmian logiki
 topo_generate_report() {
     {
         echo "EWNAF v${VERSION} — Topology Analysis Report"
@@ -2604,22 +1609,18 @@ topo_generate_report() {
     log "  Topology report: $TOPO_FILE" "TOPO"
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  ORCHESTRATOR — probe_topology() wywołuje subfunkcje po kolei
-# ──────────────────────────────────────────────────────────────────────────────
-
 probe_topology() {
     log "═══════════════════════════════════════════════════════════════" "TOPO"
     log " $(L phase_0)" "TOPO"
     log "═══════════════════════════════════════════════════════════════" "TOPO"
 
     if [[ "${TARGET_CENTRIC_MODE:-1}" == "1" ]]; then
-        log "  [v30] Enterprise auto-scope: brak ręcznych IP, brak raportowania adresów" "TOPO"
+        log "  [v30] Enterprise auto-scope: no manual IPs, no address reporting" "TOPO"
         if hound_before_discovery; then
             log "  [✓] Hound scope normalized: ${TOPO[target_subnets]}" "TOPO"
         else
-            TOPO_WARNINGS+=("NO_SCOPE: v30 nie wymaga ręcznych IP; auto-discovery nie znalazł legalnego scope enterprise")
-            log "  [!] Brak legalnego scope enterprise. v30 nie wymaga ręcznych IP; z tego punktu nie znaleziono legalnego scope enterprise." "WARN"
+            TOPO_WARNINGS+=("NO_SCOPE: v30 does not require manual IPs; auto-discovery found no legal enterprise scope")
+            log "  [!] No legal enterprise scope. v30 does not require manual IPs; no legal enterprise scope found from this vantage point." "WARN"
         fi
         TOPO[scan_recommendation]="TARGET_SCOPE_ONLY"
         topo_generate_report
@@ -2656,15 +1657,6 @@ probe_topology() {
     log " $(L topo_subnets "${TOPO[target_subnets]}")" "TOPO"
     log "═══════════════════════════════════════════════════════════════" "TOPO"
 }
-
-
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# NET-AUDIT v27 — GENERIC AUDIT FRAMEWORK
-# Zero hard-coded adresów jako cele testowe; zero integracji produktowych.
-# Wyniki: CONFIRMED | NOT_DETECTED | NOT_TESTED | ABSENT
-# ─────────────────────────────────────────────────────────────────────────────
 
 declare -a AUDIT_FINDINGS=()
 declare -A AUDIT_COVERAGE=()
@@ -2746,6 +1738,7 @@ _probe_intensity_gate() {
 }
 
 _calibrate_noise_floor() {
+
     local src="${SESSION_STATE[noise_floor]:-${BH_NOISE_FLOOR_MS:-0}}"
     _is_int "$src" || src=0
     if (( src == 0 )) && [[ -n "${GATEWAY_IP:-}" ]]; then
@@ -2892,7 +1885,7 @@ _test_dot_doh_bypass() {
     elif (( doh_ok + dot_ok == 1 )); then
         _report_finding "DNS_BYPASS_CONTROLS" "NOT_DETECTED" 55 "partial bypass surface doh=${doh_ok} dot=${dot_ok}" "_test_dot_doh_bypass"
     else
-        _report_finding "DNS_BYPASS_CONTROLS" "ABSENT" 82 "multiple DoH/DoT paths reachable" "_test_dot_doh_bypass"
+        _report_finding "DNS_BYPASS_CONTROLS" "ABSENT" 82 "DoH/DoT paths reachable (reachability confirmed, active bypass not tested)" "_test_dot_doh_bypass"
     fi
 }
 
@@ -3036,6 +2029,7 @@ _test_banner_disclosure() {
 }
 
 _test_topology_leak() {
+
     local vis="${L2_RESULTS[vendor_diversity]:-0}" flat="${L3_RESULTS[flat_network_pct]:-${TRAFFIC_POLICY[east_west_pre_hits]:-0}}"
     _is_int "$vis" || vis=0
     _is_int "$flat" || flat=0
@@ -3062,7 +2056,7 @@ _simulate_propagation() {
             [[ -z "$b" || "$a" == "$b" ]] && continue
             for p in "${ports[@]}"; do
                 (( tested++ ))
-                g_tcp_probe "$b" "$p" 1 | grep -qE 'open|closed' && { (( hits++ )); break; }
+                g_tcp_probe "$b" "$p" 1 | grep -qE 'OPEN|CLOSED' && { (( hits++ )); break; }
                 (( tested >= max_hosts )) && break
             done
             (( tested >= max_hosts )) && break
@@ -3228,9 +2222,6 @@ audit_phishing_safe() {
     _probe_harness "PHISHING_SAFE" "_simulate_phishing_safe" safe 0
 }
 
-
-# [1] PREFLIGHT
-
 preflight() {
     log "$(L preflight)" "SECTION"
 
@@ -3255,11 +2246,9 @@ preflight() {
     T[has_ipv6]="0"
     ip -6 addr show 2>/dev/null | grep -q "inet6" && T[has_ipv6]="1"
 
-    log "Narzędzia: nc=${T[nc_cmd]:-BRAK} curl=${T[curl]:-BRAK} iptables=${T[iptables]:-BRAK}"
+    log "Tools: nc=${T[nc_cmd]:-NONE} curl=${T[curl]:-NONE} iptables=${T[iptables]:-NONE}"
     log "Root: ${T[is_root]} | IPv6: ${T[has_ipv6]} | Tryb: $MODE"
 }
-
-# [2] INFRASTRUCTURE
 
 GATEWAY_IP=""
 GATEWAY_MAC=""
@@ -3268,7 +2257,6 @@ INTERNAL_DNS=""
 declare -a DNS_SERVERS=()
 declare -a LOCAL_IPS=()
 declare -a SUBNETS=()
-
 
 discover_infrastructure() {
     log "$(L phase_2)" "SECTION"
@@ -3283,25 +2271,20 @@ discover_infrastructure() {
 
     if ! hound_before_discovery; then
         AUDIT_STATUS="NO_SCOPE"
-    ewnaf_miniserver_event "audit_status" "NO_SCOPE" "Brak legalnego scope enterprise"
+    ewnaf_miniserver_event "audit_status" "NO_SCOPE" "No legal enterprise scope"
         AUDIT_NOTE="$(L no_subnets)"
         log "$AUDIT_NOTE" "WARN"
         return 1
     fi
-    log "Scope targetu po normalizacji: ${SUBNETS[*]}"
+    log "Scope after normalization: ${SUBNETS[*]}"
 
     if [[ -n "${WAN_IP_OVERRIDE:-}" ]]; then
         WAN_IP="$WAN_IP_OVERRIDE"
         log "WAN override: $WAN_IP"
     fi
 
-    log "v30: enterprise auto-scope aktywny — reachability hints bez ekspozycji adresów w raporcie"
+    log "v30: enterprise auto-scope active — reachability hints without exposing addresses in report"
 }
-
-
-
-
-# [2b] LAYER 2 — domena rozgłoszeniowa
 
 declare -A L2_RESULTS=(
     [ap_count]="0"      [switch_count]="0"    [router_count]="0"
@@ -3313,7 +2296,6 @@ declare -a L2_DEVICES=()
 audit_layer2() {
     log "$(L l2_section)" "SECTION"
 
-    # Pełny ARP sweep — wyślij ARP do wszystkich hostów we wszystkich subnetach
     local tmp_arp; tmp_arp=$(mktemp)
     for subnet in "${SUBNETS[@]}"; do
         local ip="${subnet%/*}" mask="${subnet#*/}"
@@ -3331,9 +2313,8 @@ audit_layer2() {
         done
     done
     wait
-    sleep 1  # daj ARP cache czas
+    sleep 1
 
-    # Zbierz ARP cache po sweep
     declare -A arp_full=()
     while read -r ip mac; do
         [[ -n "$ip" && -n "$mac" && "$mac" != "(incomplete)" ]] || continue
@@ -3346,9 +2327,8 @@ audit_layer2() {
         awk 'NR>1 && $3!="0x0" {print $1,$4}' /proc/net/arp 2>/dev/null || true
     } | sort -u)
 
-    log "  ARP sweep: ${#arp_full[@]} hostów"
+    log "  ARP sweep: ${#arp_full[@]} hosts"
 
-    # MAC Vendor clustering
     declare -A oui_count=()
     local ap=0 sw=0 rt=0 vendor_set=""
 
@@ -3370,7 +2350,6 @@ audit_layer2() {
                 esac ;;
         esac
 
-        # TTL-based role inference
         local ttl_h; ttl_h=$(_ping_ttl "$ip")
         if _is_int "$ttl_h" && (( ttl_h >= 250 )); then role="router/switch"; (( rt++ ))
         elif _is_int "$ttl_h" && (( ttl_h >= 120 && ttl_h <= 128 )); then [[ "$role" == "host" ]] && role="windows"
@@ -3380,7 +2359,6 @@ audit_layer2() {
         L2_DEVICES+=("$ip|$mac|$vendor|$oui|$role|$ttl_h")
     done
 
-    # TTL baseline — mediana
     local ttl_vals=()
     for dev in "${L2_DEVICES[@]}"; do
         local t; t="${dev##*|}"
@@ -3394,26 +2372,22 @@ audit_layer2() {
         L2_RESULTS[ttl_baseline]="$baseline"
     fi
 
-    # OUI diversity
     L2_RESULTS[vendor_diversity]="${#oui_count[@]}"
     L2_RESULTS[ap_count]="$ap"
     L2_RESULTS[switch_count]="$sw"
     L2_RESULTS[router_count]="$rt"
 
-    # OUI clusters (top 5)
     local clusters=""
     for oui in "${!oui_count[@]}"; do
         clusters="$clusters ${oui_count[$oui]}x$oui"
     done
     L2_RESULTS[oui_clusters]="${clusters# }"
 
-    log "  Routery: $rt | Switche: $sw | AP: $ap | OUI diversity: ${#oui_count[@]}"
+    log "  Routers: $rt | Switches: $sw | AP: $ap | OUI diversity: ${#oui_count[@]}"
     log "  TTL baseline: ${L2_RESULTS[ttl_baseline]}"
 
     rm -f "$tmp_arp"
 }
-
-# [2c] LAYER 3 — routing i segmentacja
 
 declare -A L3_RESULTS=(
     [reachable_subnets]=""  [cross_subnet_ok]="0"
@@ -3425,7 +2399,6 @@ declare -a L3_PATHS=()
 audit_layer3() {
     log "$(L l3_section)" "SECTION"
 
-    # Guard: DEV_COUNT z tablicy D_IP (nie zakładaj że poprzednia faza ustawiła)
     local DEV_COUNT="${#D_IP[@]}"
     if (( DEV_COUNT == 0 )); then
         L3_RESULTS[cross_subnet_ok]="INSUFFICIENT_SAMPLE"
@@ -3434,7 +2407,6 @@ audit_layer3() {
         return
     fi
 
-    # TTL probing — wykryj reachable subnety przez wariację TTL odpowiedzi
     declare -A seen_subnets=()
     for dev in "${L2_DEVICES[@]}"; do
         local ip="${dev%%|*}"
@@ -3448,19 +2420,16 @@ audit_layer3() {
         reachable="$reachable $sn"
     done
     L3_RESULTS[reachable_subnets]="${reachable# }"
-    log "  Wykryte subnety (TTL probing): ${L3_RESULTS[reachable_subnets]}"
+    log "  Detected subnets (TTL probing): ${L3_RESULTS[reachable_subnets]}"
 
-    # Cross-subnet reachability test
-    # Cross-subnet reachability — używa REALNYCH hostów z różnych subnetów
     local cross_hits=0 cross_total=0
     local _l2_limit=$(( DEV_COUNT < 16 ? DEV_COUNT : 16 ))
     for (( i=0; i<_l2_limit; i++ )); do
         for (( j=i+1; j<_l2_limit; j++ )); do
             local s1; s1=$(echo "${D_IP[$i]}" | awk -F. '{print $1"."$2"."$3}')
             local s2; s2=$(echo "${D_IP[$j]}" | awk -F. '{print $1"."$2"."$3}')
-            [[ "$s1" == "$s2" ]] && continue  # pomiń same-subnet pary
+            [[ "$s1" == "$s2" ]] && continue
             (( cross_total++ ))
-            # Analiza kierunkowa: A→B i B→A (asymetryczne ACL = mamy korelację)
             local ab=0 ba=0
             if probe_port "${D_IP[$j]}" 80 1 || \
                probe_port "${D_IP[$j]}" 443 1 || \
@@ -3473,7 +2442,6 @@ audit_layer3() {
                 L3_PATHS+=("${D_IP[$i]} → ${D_IP[$j]}")
             fi
             if (( ab == 1 && ba == 0 )); then
-                # Asymetryczny — wskazuje na ACL w jedną stronę (nie brak segmentacji)
                 L3_PATHS+=("${D_IP[$i]} → ${D_IP[$j]} [ASYMMETRIC ACL]")
                 L3_RESULTS[asymmetric_acl]="1"
             fi
@@ -3481,16 +2449,15 @@ audit_layer3() {
     done
     if (( cross_total >= 2 )); then
         local cross_pct=$(( cross_hits * 100 / cross_total ))
-        # Minimalna próbka 6 par + >50% — eliminuje fałszywe HIGH przy małej sieci
         if (( cross_total >= 6 && cross_pct > 50 )); then
             L3_RESULTS[cross_subnet_ok]="1"
             log "  [!] Cross-subnet reachability: ${cross_hits}/${cross_total} par (${cross_pct}%)" "WARN"
-            add_net_finding "HIGH" "SEGMENTACJA"                 "Cross-subnet ruch niezablokowany (${cross_pct}% par, próbka=${cross_total})"                 "Wdróż ACL między subnetami. Sprawdź routing policy na GW."
+            add_net_finding "HIGH" "SEGMENTACJA"                 "Cross-subnet traffic unblocked (${cross_pct}% pairs, sample=${cross_total})"                 "Deploy inter-subnet ACLs. Check routing policy on GW."
         elif (( cross_total < 6 && cross_pct > 50 )); then
             L3_RESULTS[cross_subnet_ok]="WEAK_SIGNAL"
-            log "  [~] Cross-subnet: sygnał słaby (${cross_hits}/${cross_total} par, ${cross_pct}% — próbka za mała)" "WARN"
+            log "  [~] Cross-subnet: weak signal (${cross_hits}/${cross_total} par, ${cross_pct}% — insufficient sample)" "WARN"
         else
-            log "  [✓] Cross-subnet izolacja aktywna (${cross_hits}/${cross_total} par)" "OK"
+            log "  [✓] Cross-subnet isolation active (${cross_hits}/${cross_total} pairs)" "OK"
         fi
         local synth_total=0 synth_hits=0
         local targets=() sn
@@ -3513,20 +2480,18 @@ audit_layer3() {
         done
         if (( synth_total >= 4 && synth_hits >= 1 )); then
             L3_RESULTS[cross_subnet_ok]="WEAK_SIGNAL"
-            log "  [!] Cross-subnet: słaby sygnał (synth ${synth_hits}/${synth_total})" "WARN"
+            log "  [!] Cross-subnet: weak signal (synth ${synth_hits}/${synth_total})" "WARN"
         else
-            log "  [i] Za mało hostów w różnych subnetach (${cross_total} par) — test niewiarygodny"
+            log "  [i] Too few hosts in different subnets (${cross_total} pairs) — test unreliable"
             L3_RESULTS[cross_subnet_ok]="INSUFFICIENT_SAMPLE"
         fi
     fi
 
-    # Silent DROP vs REJECT — test przez nie-routowalne IP
     local test_ip="${GATEWAY_IP:-192.168.1.1}"
 
-    # Baseline: normalna latencja portu otwartego (eliminuje wolny router/QoS)
     local _drop_baseline; _drop_baseline=$(_tcp_samples_median "$test_ip" 80 3 1)
     _is_int "$_drop_baseline" || _drop_baseline=50
-    (( _drop_baseline < 5 )) && _drop_baseline=5   # minimalny baseline 5ms
+    (( _drop_baseline < 5 )) && _drop_baseline=5
 
     local t_start t_end delta
     t_start=$(date +%s%3N)
@@ -3534,7 +2499,6 @@ audit_layer3() {
     t_end=$(date +%s%3N)
     delta=$(( t_end - t_start ))
 
-    # Wymóg: delta > baseline×4 ORAZ bezwzględnie ≥2000ms
     local _drop_ratio=0
     (( _drop_baseline > 0 )) && _drop_ratio=$(( delta * 100 / _drop_baseline ))
     local _drop_conf
@@ -3544,12 +2508,11 @@ audit_layer3() {
     L3_RESULTS[silent_drop_baseline]="$_drop_baseline"
     if (( _drop_conf >= 75 )); then
         L3_RESULTS[silent_drop_detected]="1"
-        log "  [✓] Silent DROP: timeout=${delta}ms, baseline=${_drop_baseline}ms, ratio=${_drop_ratio}%, pewność=${_drop_conf}%" "OK"
+        log "  [✓] Silent DROP: timeout=${delta}ms, baseline=${_drop_baseline}ms, ratio=${_drop_ratio}%, confidence=${_drop_conf}%" "OK"
     else
         log "  [i] GW REJECT/RST — delta=${delta}ms (baseline=${_drop_baseline}ms, ratio=${_drop_ratio}%)"
     fi
 
-    # East-West isolation — walidacja z minimalną próbką
     local flat_hits=0 flat_total=0
     local ew_subnets_seen=()
     local _l3_limit=$(( DEV_COUNT < 24 ? DEV_COUNT : 24 ))
@@ -3558,9 +2521,8 @@ audit_layer3() {
             local src="${D_IP[$i]}" dst="${D_IP[$j]}"
             local s3_src; s3_src=$(echo "$src" | cut -d. -f1-3)
             local s3_dst; s3_dst=$(echo "$dst" | cut -d. -f1-3)
-            [[ "$s3_src" == "$s3_dst" ]] || continue  # tylko same-subnet
+            [[ "$s3_src" == "$s3_dst" ]] || continue
             (( flat_total++ ))
-            # Próba peer-to-peer na typowych portach lateral movement
             if probe_port "$dst" 445 1 || probe_port "$dst" 22 1                || probe_port "$dst" 3389 1 || probe_port "$dst" 5985 1; then
                 (( flat_hits++ ))
             fi
@@ -3570,7 +2532,7 @@ audit_layer3() {
     if (( flat_total < 4 )); then
         L3_RESULTS[east_west_isolated]="INSUFFICIENT_SAMPLE"
         L3_RESULTS[east_west_conf]="0"
-        log "  [i] East-West: za mało par same-subnet ($flat_total) — test niewiarygodny"
+        log "  [i] East-West: too few same-subnet pairs ($flat_total) — test unreliable"
     else
         local ew_pct=$(( flat_hits * 100 / flat_total ))
         local ew_conf
@@ -3579,18 +2541,17 @@ audit_layer3() {
         L3_RESULTS[east_west_conf]="$ew_conf"
         if (( ew_pct > 50 )); then
             L3_RESULTS[east_west_isolated]="0"
-            log "  [!] East-West NIE izolowany (${flat_hits}/${flat_total}, ${ew_pct}%, pewność=${ew_conf}%)" "WARN"
+            log "  [!] East-West NOT isolated (${flat_hits}/${flat_total}, ${ew_pct}%, confidence=${ew_conf}%)" "WARN"
             local ew_sev="HIGH"; (( ew_conf >= 72 )) && ew_sev="CRITICAL"
             add_net_finding "$ew_sev" "LATERAL_MOVEMENT" \
-                "East-West: ${flat_hits}/${flat_total} par same-subnet osiągalnych (${ew_pct}%, pewność=${ew_conf}%)" \
-                "Wdróż VLAN mikrosegmentację lub port isolation. Sprawdź ACL peer-to-peer."
+                "East-West: ${flat_hits}/${flat_total} same-subnet pairs reachable (${ew_pct}%, confidence=${ew_conf}%)" \
+                "Deploy VLAN microsegmentation or port isolation. Check peer-to-peer ACLs."
         else
             L3_RESULTS[east_west_isolated]="1"
-            log "  [✓] East-West izolacja aktywna (${flat_hits}/${flat_total}, ${ew_pct}%, pewność=${ew_conf}%)" "OK"
+            log "  [✓] East-West isolation active (${flat_hits}/${flat_total}, ${ew_pct}%, confidence=${ew_conf}%)" "OK"
         fi
     fi
 
-    # Asymmetric ACL — wyślij SYN do GW na port który GW ma zamknięty vs odpowiedź
     local asym_test=0
     for port in 8080 8443 9090; do
         local r1; r1=$(probe_port "$GATEWAY_IP" "$port" 1 && echo "1" || echo "0")
@@ -3605,8 +2566,6 @@ audit_layer3() {
     log "  Cross-subnet: ${L3_RESULTS[cross_subnet_ok]} | Silent-drop: ${L3_RESULTS[silent_drop_detected]} | EW-isolated: ${L3_RESULTS[east_west_isolated]}"
 }
 
-# [2d] TRAFFIC POLICY — polityka ruchu
-
 declare -A TRAFFIC_POLICY=(
     [http_egress_blocked]="0"   [dns_controlled]="0"
     [transparent_proxy]="0"     [tls_intercepted]="0"
@@ -3615,47 +2574,50 @@ declare -A TRAFFIC_POLICY=(
 )
 
 audit_traffic_policy() {
-# Gentle mode: do NOT perform burst/IDS-like probing (can look like an attack).
 if [[ "${SAFE_MODE:-1}" == "1" ]]; then
-    log_info "[IDS] Gentle mode: skipping burst/rate-limit probing (polite audit)."
+    log "[IDS] Gentle mode: skipping burst/rate-limit probing (polite audit)." "INFO"
     return 0
 fi
 
-
     log "$(L traffic_section)" "SECTION"
 
-    # HTTP egress — czy port 80 wychodzący jest zablokowany
     if probe_port "example.com" 80 3; then
         TRAFFIC_POLICY[http_egress_blocked]="0"
         log "$(L http_open)" "WARN"
-        add_net_finding "MEDIUM" "EGRESS"             "HTTP egress port 80 otwarty — wektor exfiltracji niezaszyfrowanej"             "Zablokuj HTTP outbound. Wymuś HTTPS na poziomie firewalla."
+        add_net_finding "INFO" "EGRESS"             "HTTP egress port 80 reachable — unencrypted channel available (reachability only, not confirmed exfiltration)"             "Consider blocking outbound HTTP. Enforce HTTPS at proxy/firewall level."
     else
         TRAFFIC_POLICY[http_egress_blocked]="1"
         _safe_set RAW_EGRESS "http_egress_blocked" "1"
         log "$(L http_blocked)" "OK"
     fi
 
-    # DNS — pomiar przez porównanie odpowiedzi + dostępność zewnętrznych resolverów
     if [[ -n "${T[dig]:-}" ]]; then
         local dns_to_test="${INTERNAL_DNS:-}"
 
-        # Test 1: Czy internal resolver odpowiada (czy jest w ogóle DNS)
         local r_int
         r_int=$(timeout 2 dig +short +timeout=1 "example.com" "@${dns_to_test}" 2>/dev/null | grep -E '^[0-9]' | head -1 || echo "")
 
-        # Test 2: Czy zewnętrzny resolver działa (baseline)
-        local r_ext
-        r_ext=$(timeout 2 dig +short +timeout=1 "example.com" "@8.8.8.8" 2>/dev/null | grep -E '^[0-9]' | head -1 || echo "")
+        local r_ext _ref1="" _ref2=""
+        mapfile -t _dns_refs < <(_external_dns_refs)
+        [[ ${#_dns_refs[@]} -ge 1 ]] && _ref1="${_dns_refs[0]}"
+        [[ ${#_dns_refs[@]} -ge 2 ]] && _ref2="${_dns_refs[1]}"
+        if [[ -n "$_ref1" ]]; then
+            r_ext=$(timeout 2 dig +short +timeout=1 "example.com" "@${_ref1}" 2>/dev/null | grep -E '^[0-9]' | head -1 || echo "")
+        else
+            r_ext=""
+        fi
 
         if [[ -z "$r_ext" ]]; then
-            log "  [i] Brak zewnętrznej łączności DNS — testy DNS ograniczone"
+            log "  [i] No external DNS baseline available — DNS tests limited"
         elif [[ -n "$r_int" && -n "$r_ext" ]]; then
             if [[ "$r_int" != "$r_ext" ]]; then
-                # Różne wyniki = split-DNS lub filtering — to pozytywny wskaźnik kontroli
                 TRAFFIC_POLICY[dns_controlled]="1"
-                log "  [✓] DNS split lub filtering (internal=${r_int}, external=${r_ext})" "OK"
+                log "  [✓] DNS split or filtering (internal=${r_int}, external=${r_ext})" "OK"
             else
-                local _ref1="$EXT_DNS_SECONDARY" _ref2="$EXT_DNS_PRIMARY"
+                [[ -z "$_ref1" || -z "$_ref2" ]] && {
+                    log "  [i] DNS filtering: insufficient reference resolvers — fallback checks skipped"
+                    return 0
+                }
                 local ads_list=("doubleclick.net" "adservice.google.com" "ads.yahoo.com")
                 local obs=0 blk=0 d a1 a2 rr1 rr2
                 for d in "${ads_list[@]}"; do
@@ -3676,13 +2638,12 @@ fi
                         TRAFFIC_POLICY[dns_controlled]="1"
                         log "$(L dns_filter_ok "${pct}")" "OK"
                     else
-                        log "  [i] DNS bez mocnych dowodów filtrowania (${pct}%)"
+                        log "  [i] DNS no strong filtering evidence (${pct}%)"
                     fi
                 fi
             fi
         fi
 
-        # DNS leak (precision v2): real DNS queries — UDP+TCP — do 4 resolverów
         local ext_dns_list=("$EXT_DNS_PRIMARY" "$EXT_DNS_SECONDARY" "$EXT_DNS_TERTIARY" "$EXT_DNS_QUAD")
         local udp_ok=0 tcp_ok=0 ext
         for ext in "${ext_dns_list[@]}"; do
@@ -3690,8 +2651,6 @@ fi
             (( u == 1 )) && (( udp_ok++ ))
             (( t == 1 )) && (( tcp_ok++ ))
         done
-        # Leak = UDP+TCP obydwa osiągalne na ≥3 resolverach (nie "jeden działa")
-        # 1 resolver UDP może być ISP passthrough — to nie pełny leak
         local _leak_conf
         _leak_conf=$(_conf_dns_leak "$udp_ok" "$tcp_ok" 4)
         _is_int "$_leak_conf" || _leak_conf=0
@@ -3702,8 +2661,8 @@ fi
             local _leak_sev="HIGH"; (( _leak_conf >= 90 )) && _leak_sev="HIGH"
             log "$(L dns_leak "${udp_ok}" "${tcp_ok}" "${_leak_conf}")" "WARN"
             add_net_finding "$_leak_sev" "DNS" \
-                "DNS leak (pewność ${_leak_conf}%): zewnętrzne resolvery osiągalne (UDP=${udp_ok}/4, TCP=${tcp_ok}/4)" \
-                "Zablokuj egress UDP/TCP 53 poza własnym resolwerem; rozważ DNS redirect/hijack na GW."
+                "DNS leak (confidence ${_leak_conf}%): external resolvers reachable (UDP=${udp_ok}/4, TCP=${tcp_ok}/4)" \
+                "Block egress UDP/TCP 53 outside own resolver; consider DNS redirect/hijack on GW."
         elif (( _leak_conf >= 60 )); then
             TRAFFIC_POLICY[dns_leak]="PARTIAL"
             log "$(L dns_leak_weak "${udp_ok}" "${tcp_ok}" "${_leak_conf}")" "WARN"
@@ -3713,7 +2672,6 @@ fi
         fi
     fi
 
-    # Transparent proxy — sprawdź via nagłówek X-Forwarded-For / Via
     if [[ -n "${T[curl]:-}" ]]; then
         local headers
         headers=$(curl -sk --max-time 4 -I "http://example.com" 2>/dev/null | tr -d '
@@ -3721,12 +2679,11 @@ fi
         if echo "$headers" | grep -qi "x-forwarded-for\|via:\|x-proxy\|x-cache"; then
             TRAFFIC_POLICY[transparent_proxy]="1"
             log "$(L tproxy)" "WARN"
-            add_net_finding "MEDIUM" "PROXY"                 "Transparent proxy wykryty — cały ruch HTTP jest przechwytywany/logowany"                 "Zweryfikuj czy proxy jest autoryzowany. Może przechwytywać dane uwierzytelniania."
+            add_net_finding "MEDIUM" "PROXY"                 "Transparent proxy detected — all HTTP traffic is intercepted/logged"                 "Verify proxy is authorised. May intercept authentication data."
         else
-            log "  [i] Brak transparent proxy (brak nagłówków proxy)"
+            log "  [i] No transparent proxy (no proxy headers)"
         fi
 
-        # TLS interception (precision v2): SHA256 fingerprint via-net vs direct IP z retries
         if [[ -n "${T[openssl]:-}" ]]; then
             local host="example.com" ip_direct="93.184.216.34"
             local d1 d2 d3 v1 v2 v3 d_ok=0 v_ok=0
@@ -3739,29 +2696,23 @@ fi
             [[ -n "$d1" ]] && (( d_ok++ )); [[ -n "$d2" ]] && (( d_ok++ )); [[ -n "$d3" ]] && (( d_ok++ ))
             [[ -n "$v1" ]] && (( v_ok++ )); [[ -n "$v2" ]] && (( v_ok++ )); [[ -n "$v3" ]] && (( v_ok++ ))
             if (( d_ok >= 2 && v_ok >= 2 )); then
-                # Sprawdź stabilność direct fingerprint (CDN/failover może dać różne)
                 local d_stable=0 v_stable=0 d_fp="" v_fp=""
-                # direct stabilny: co najmniej 2 z 3 identyczne
                 [[ -n "$d1" && -n "$d2" && "$d1" == "$d2" ]] && d_stable=1 && d_fp="$d1"
                 [[ -n "$d1" && -n "$d3" && "$d1" == "$d3" ]] && d_stable=1 && d_fp="$d1"
                 [[ -n "$d2" && -n "$d3" && "$d2" == "$d3" ]] && d_stable=1 && d_fp="$d2"
-                # via-net stabilny: co najmniej 2 z 3 identyczne
                 [[ -n "$v1" && -n "$v2" && "$v1" == "$v2" ]] && v_stable=1 && v_fp="$v1"
                 [[ -n "$v1" && -n "$v3" && "$v1" == "$v3" ]] && v_stable=1 && v_fp="$v1"
                 [[ -n "$v2" && -n "$v3" && "$v2" == "$v3" ]] && v_stable=1 && v_fp="$v2"
 
                 if (( d_stable == 0 || v_stable == 0 )); then
-                    # Niestabilny fingerprint — nie wyciągamy wniosków (CDN, failover, timeout)
                     TRAFFIC_POLICY[tls_intercepted]="INCONCLUSIVE"
                     log "  [i] TLS: niestabilny fingerprint (direct_ok=${d_ok}, via_ok=${v_ok}) — INCONCLUSIVE (możliwy CDN/failover)"
                 elif [[ "$d_fp" != "$v_fp" ]]; then
-                    # Dodatkowa weryfikacja: issuer i SAN
                     local d_issuer_san; d_issuer_san=$(_tls_issuer_san "$host" "$ip_direct" 443 "$host")
                     local v_issuer_san; v_issuer_san=$(_tls_issuer_san "$host" "" 443 "$host")
                     local d_issuer="${d_issuer_san%%|*}" v_issuer="${v_issuer_san%%|*}"
                     local d_san="${d_issuer_san##*|}" v_san="${v_issuer_san##*|}"
 
-                    # Oblicz san_delta: v_san - d_san (ujemny gdy intercepcja redukuje SAN)
                     local _san_delta=0
                     _is_int "$d_san" && _is_int "$v_san" && _san_delta=$(( v_san - d_san ))
                     local _issuer_match=1
@@ -3772,18 +2723,17 @@ fi
 
                     TRAFFIC_POLICY[tls_intercepted]="1"
                     TRAFFIC_POLICY[tls_conf]="$_tls_conf"
-                    log "  [!] TLS interception: fingerprint mismatch, issuer d=${d_issuer} v=${v_issuer}, SAN d=${d_san} v=${v_san} (pewność ${_tls_conf}%)" "WARN"
+                    log "  [!] TLS interception: fingerprint mismatch, issuer d=${d_issuer} v=${v_issuer}, SAN d=${d_san} v=${v_san} (confidence ${_tls_conf}%)" "WARN"
                     add_net_finding "HIGH" "TLS" \
-                        "TLS interception (pewność ${_tls_conf}%): fingerprint direct≠via, issuer direct=${d_issuer:-?} via=${v_issuer:-?}" \
-                        "Zweryfikuj politykę TLS inspection na proxy/NGFW. Sprawdź issuer: różne issuery potwierdzają MITM."
+                        "TLS interception (confidence ${_tls_conf}%): fingerprint direct≠via, issuer direct=${d_issuer:-?} via=${v_issuer:-?}" \
+                        "Verify TLS inspection policy on proxy/NGFW. Check issuer: different issuers confirm MITM."
                 else
                     TRAFFIC_POLICY[tls_intercepted]="0"
-                    log "  [i] TLS: fingerprint stabilny i zgodny (brak intercepcji)"
+                    log "  [i] TLS: fingerprint stable and consistent (no interception)"
                 fi
             fi
         fi
 
-        # HTTP → HTTPS redirect
         local redir_code
         redir_code=$(curl -sk --max-time 3 -o /dev/null -w "%{http_code}" "http://example.com" 2>/dev/null || echo "0")
         if [[ "$redir_code" == "301" || "$redir_code" == "302" || "$redir_code" == "307" || "$redir_code" == "308" ]]; then
@@ -3791,11 +2741,10 @@ fi
         fi
     fi
 
-    # Rate limiting — mediana z 5 pomiarów przed i po burst (stabilne statystycznie)
+    if [[ "${_skip_burst:-0}" != "1" ]]; then
     local gw_rl="${GATEWAY_IP:-}"
     [[ -z "$gw_rl" ]] && gw_rl="${TOPO[real_gateway]:-}"
     if [[ -n "$gw_rl" ]]; then
-        # Baseline: 5 pomiarów ze spacingiem — zbierz do tablicy
         local rl_base_arr=()
         local _t1 _t2
         for _ in 1 2 3 4 5; do
@@ -3810,15 +2759,13 @@ fi
         local rl_med_base=""; (( ${#rl_base_arr[@]} >= 3 )) && rl_med_base=$(_median_int "${rl_base_arr[@]}")
 
         if [[ -z "$rl_med_base" || "$rl_med_base" -eq 0 ]]; then
-            log "  [i] Rate limiting: za mało próbek baseline (${#rl_base_arr[@]}) — INCONCLUSIVE"
+            log "  [i] Rate limiting: za mało probesek baseline (${#rl_base_arr[@]}) — INCONCLUSIVE"
             TRAFFIC_POLICY[rate_limiting]="INCONCLUSIVE"
         else
-            # Burst: 8 szybkich połączeń
             for _ in 1 2 3 4 5 6 7 8; do
                 timeout 1 bash -c "exec 3<>/dev/tcp/$gw_rl/80 && exec 3>&-" 2>/dev/null; true
             done
 
-            # Post-burst: 4 pomiary (wymagaj min. 3 ważnych)
             local rl_post_arr=()
             for _ in 1 2 3 4; do
                 _t1=$(date +%s%3N)
@@ -3831,23 +2778,22 @@ fi
             local rl_med_post=""; (( ${#rl_post_arr[@]} >= 3 )) && rl_med_post=$(_median_int "${rl_post_arr[@]}")
 
             if [[ -z "$rl_med_post" || "$rl_med_post" -eq 0 ]]; then
-                log "  [i] Rate limiting: za mało próbek post-burst (${#rl_post_arr[@]}) — INCONCLUSIVE"
+                log "  [i] Rate limiting: za mało probesek post-burst (${#rl_post_arr[@]}) — INCONCLUSIVE"
                 TRAFFIC_POLICY[rate_limiting]="INCONCLUSIVE"
             elif (( rl_med_post > rl_med_base * 3 && rl_med_post > 300 )); then
                 TRAFFIC_POLICY[rate_limiting]="1"
                 log "  [✓] Rate limiting: baseline=${rl_med_base}ms, post-burst=${rl_med_post}ms (×$(( rl_med_post / (rl_med_base+1) )))" "OK"
-                SECURITY_SYSTEMS+=("Rate limiting: aktywny (${rl_med_base}→${rl_med_post}ms)")
+                SECURITY_SYSTEMS+=("Rate limiting: active (${rl_med_base}→${rl_med_post}ms)")
             else
                 TRAFFIC_POLICY[rate_limiting]="0"
-                log "  [i] Brak widocznego rate limiting (base=${rl_med_base}ms, post=${rl_med_post}ms)"
+                log "  [i] No visible rate limiting (base=${rl_med_base}ms, post=${rl_med_post}ms)"
             fi
         fi
     fi
 
+    fi
     log "  HTTP-blocked: ${TRAFFIC_POLICY[http_egress_blocked]} | DNS-ctrl: ${TRAFFIC_POLICY[dns_controlled]} | Proxy: ${TRAFFIC_POLICY[transparent_proxy]} | TLS-intercept: ${TRAFFIC_POLICY[tls_intercepted]} | Rate-limit: ${TRAFFIC_POLICY[rate_limiting]}"
 }
-
-# [3] DISCOVERY
 
 declare -A OUI_TABLE=(
     ["000C29"]="VMware"     ["005056"]="VMware"
@@ -3884,17 +2830,16 @@ expand_subnet() {
     local start=$(( net + 1 ))
     local end=$(( bcast - 1 ))
 
-    # Adaptive sampling — nie skanuj całej sieci /8 lub /16 w pełni
     local host_count=$(( end - start + 1 ))
     local max_hosts
-    if   (( host_count <= 254 ));   then max_hosts=$host_count  # /24 — pełny scan
-    elif (( host_count <= 1022 ));  then max_hosts=510           # /22 — sample 50%
-    elif (( host_count <= 4094 ));  then max_hosts=512           # /20 — sample 12%
-    elif (( host_count <= 65534 )); then max_hosts=1024          # /16 — sample 1.5%
-    else                                 max_hosts=2048          # /8+ — sample
+    if   (( host_count <= 254 ));   then max_hosts=$host_count
+    elif (( host_count <= 1022 ));  then max_hosts=510
+    elif (( host_count <= 4094 ));  then max_hosts=512
+    elif (( host_count <= 65534 )); then max_hosts=1024
+    else                                 max_hosts=2048
     fi
     if (( host_count > max_hosts )); then
-        log "  [!] Sieć $cidr: $host_count hostów — adaptive sampling do $max_hosts" "WARN"
+        log "  [!] Network $cidr: $host_count hosts — adaptive sampling to $max_hosts" "WARN"
         end=$(( start + max_hosts - 1 ))
     fi
 
@@ -3911,17 +2856,14 @@ declare -a D_RAW_SCORE=() D_MITIGATIONS=() D_RESIDUAL_SCORE=() D_RISK_BAND=()
 declare -a D_FINDINGS=() D_VERIFIED=()
 DEV_COUNT=0
 
-# CVSS v3.1 base score lookup — bez zewnętrznych narzędzi
-# Mapuje kategorie findingów na typowe CVSS base scores
 cvss_for_finding() {
     local sev="$1" cat="$2"
-    # Precyzyjne score per kategoria (NIST NVD typowe wartości)
     case "${sev}:${cat}" in
         CRITICAL:CONTAINER_ESCAPE)  echo "10.0" ;;  # AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H
         CRITICAL:K8S_UNAUTHENTICATED) echo "9.8" ;; # AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
         CRITICAL:ETCD_OPEN)         echo "9.8" ;;
-        CRITICAL:KRADZIEŻ_DANYCH)   echo "9.1" ;;  # AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N
-        CRITICAL:KRADZIEŻ_HASEŁ)    echo "9.8" ;;
+        CRITICAL:DATA_THEFT)   echo "9.1" ;;  # AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N
+        CRITICAL:CREDENTIAL_THEFT)    echo "9.8" ;;
         CRITICAL:POTENCJALNY_BACKDOOR) echo "9.8" ;;
         CRITICAL:PROTOKÓŁ)          echo "7.4" ;;  # SSH v1: AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N
         CRITICAL:SNMP_OPEN)         echo "8.6" ;;  # AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:L
@@ -3953,7 +2895,6 @@ cvss_for_finding() {
 
 add_finding() {
     local idx="$1" sev="$2" cat="$3" desc="$4" rec="${5:-}" cvss="${6:-}"
-    # Auto-calcola CVSS se non fornito
     [[ -z "$cvss" ]] && cvss=$(cvss_for_finding "$sev" "$cat")
     local entry="${sev}${SEP}${cat}${SEP}${desc}${SEP}${rec}${SEP}${cvss}"
     if [[ -z "${D_FINDINGS[$idx]:-}" ]]; then D_FINDINGS[$idx]="$entry"
@@ -3984,7 +2925,6 @@ discover_hosts() {
     done < <({
         arp -n 2>/dev/null | awk '/[0-9]/ && !/incomplete/ {print $1,$3}'
         ip neigh 2>/dev/null | awk '/REACHABLE|STALE|DELAY|PERMANENT/ {print $1,$5}'
-        # WSL / Linux kernel ARP table — bezpośrednio z /proc
         awk 'NR>1 && $3!="0x0" {print $1,$4}' /proc/net/arp 2>/dev/null || true
     } | sort -u)
 
@@ -4012,7 +2952,6 @@ discover_hosts() {
             [[ -z "$ip" ]] && continue
             _is_excluded_ip "$ip" && continue
 
-            # Pomiń VPN IP zakresy
             if [[ "${TOPO[vpn_detected]:-0}" == "1" ]]; then
                 if echo "$ip" | grep -qE "^(10\.255\.|172\.31\.[0-9]+\.[0-9]+$)"; then
                     continue
@@ -4021,17 +2960,12 @@ discover_hosts() {
 
             (
                 local alive=0
-                # 1. ARP cache (szybko, pasywnie)
                 [[ -n "${arp_map[$ip]:-}" ]] && alive=1
-                # 2. TCP connect probe — OPEN lub CLOSED = host żywy
                 if (( alive == 0 )); then
                     for _p in 22 80 443 445 3389 53 8080 8443 8888 22222 8006 9200 9000; do
                         timeout 0.8 bash -c "exec 3<>/dev/tcp/$ip/$_p && exec 3>&-" 2>/dev/null                             && alive=1 && break
                     done
                 fi
-                # 3. Jeśli nadal nie wykryto — g_host_detect (rozróżnia DROP firewall)
-                #    Host z pełnym DROP policy zwraca FILTERED na wszystkich portach.
-                #    Klasyczny probe go pomija. g_host_detect go wykrywa.
                 local detection_method="tcp"
                 if (( alive == 0 )); then
                     local _ghd; _ghd=$(g_host_detect "$ip")
@@ -4070,33 +3004,19 @@ discover_hosts() {
             D_ROLE+=("") D_PORTS+=("") D_BANNERS+=("") D_SEGMENT+=("")
             D_RAW_SCORE+=(0) D_MITIGATIONS+=("") D_RESIDUAL_SCORE+=(0)
             D_RISK_BAND+=("") D_FINDINGS+=("") D_VERIFIED+=("")
-            # Oznacz hosty wykryte tylko przez DROP fingerprint
             if [[ "${detection_method:-}" == "HOST_FIREWALLED" ]]; then
                 local _fw_idx=$(( ${#D_IP[@]} - 1 ))
-                add_finding "$_fw_idx" "INFO" "FIREWALLED_HOST"                     "Host $ip wykryty przez fingerprint DROP policy — brak odpowiedzi na standardowe porty"                     "Host z agresywną polityką DROP. Może być stealth node lub security appliance."
+                add_finding "$_fw_idx" "INFO" "FIREWALLED_HOST"                     "Host $ip detected via DROP policy fingerprint — no response on standard ports"                     "Host with aggressive DROP policy. May be stealth node or security appliance."
             fi
             (( DEV_COUNT++ ))
-            log "Host: $ip | TTL=$ttl | MAC=${mac:-0} | Vendor=$vendor | PTR=${hostname:-brak}"
+            log "Host: $ip | TTL=$ttl | MAC=${mac:-0} | Vendor=$vendor | PTR=${hostname:-none}"
         done < "${tmp_alive}.s"
     fi
 
     rm -rf "$tmp_alive" "${tmp_alive}.s" 2>/dev/null || true
-    log "Discovery zakończony: $DEV_COUNT hostów"
+    log "Discovery complete: $DEV_COUNT hosts"
 }
 
-# HONEYPOT / FAKE PORT DETECTION — behawioralna, na zdalnych hostach
-#
-# Metoda: obserwacja ZACHOWANIA portu, nie obecności procesu
-#
-# Wskaźniki fałszywego portu (honeypot/mirage):
-#  1. Port odpowiada identycznym bannerem jak inny port na tym samym hoście
-#  2. Port odpowiada bardzo szybko (<5ms) — typowe dla nc -e /dev/zero
-#  3. Port ignoruje dane wejściowe i zwraca tę samą odpowiedź
-#  4. Host ma zbyt dużo otwartych portów jak na swój profil (>15 portów = podejrzane)
-#  5. Timing: identyczny czas odpowiedzi na 3+ portach (±10ms)
-#  6. Banner jest pusty ale port "otwarty" (nc fake accept)
-
-# Główna ocena honeypot dla jednego hosta — zwraca liczbę podejrzanych portów
 detect_honeypot_ports() {
     local ip="$1"
     local open_ports="$2"
@@ -4106,7 +3026,6 @@ detect_honeypot_ports() {
     local honeypot_score=0
     local reasons=""
 
-    # --- Wskaźnik 1: Zbyt dużo otwartych portów ---
     if (( port_count_n > 20 )); then
         honeypot_score=$(( honeypot_score + 3 ))
         reasons="$reasons EXCESS_PORTS($port_count_n)"
@@ -4115,11 +3034,8 @@ detect_honeypot_ports() {
         reasons="$reasons HIGH_PORT_COUNT($port_count_n)"
     fi
 
-    # --- Wskaźnik 2: Timing fingerprint z walidacją (load balancer vs honeypot) ---
-    # Load balancer: identyczny timing NA WSZYSTKICH portach łącznie z 80/443
-    # Honeypot/nc: identyczny timing na NIEZNANYCH portach, ale nie na 80/443
     local timing_samples=""
-    local timing_known=""   # timing na znanych portach (80, 443, 22)
+    local timing_known=""
     local timing_unknown="" # timing na nieznanych portach
     local sample_ports=( $open_ports )
     local sampled=0
@@ -4140,7 +3056,6 @@ detect_honeypot_ports() {
         (( sampled++ ))
     done
 
-    # Identyczny timing NA NIEZNANYCH portach (a znane nie są tak szybkie) = honeypot
     local uk_arr=( $timing_unknown )
     if (( ${#uk_arr[@]} >= 3 )); then
         local identical=0 ref="${uk_arr[0]}"
@@ -4148,13 +3063,12 @@ detect_honeypot_ports() {
             local diff=$(( t - ref )); (( diff < 0 )) && diff=$(( -diff ))
             (( diff <= 15 )) && (( identical++ ))
         done
-        # Tylko jeśli znane porty mają RÓŻNY timing (inaczej to LB)
         local known_ok=1
         local kn_arr=( $timing_known )
         if (( ${#kn_arr[@]} >= 2 )); then
             local k_diff=$(( ${kn_arr[0]} - ${kn_arr[1]} ))
             (( k_diff < 0 )) && k_diff=$(( -k_diff ))
-            (( k_diff <= 15 )) && known_ok=0  # znane też identyczne = load balancer
+            (( k_diff <= 15 )) && known_ok=0
         fi
         if (( identical >= 3 && known_ok == 1 )); then
             honeypot_score=$(( honeypot_score + 2 ))
@@ -4162,8 +3076,6 @@ detect_honeypot_ports() {
         fi
     fi
 
-    # --- Wskaźnik 3: Banner fingerprint ---
-    # Pobierz bannery z kilku portów i porównaj
     local banner_samples=""
     local banner_count=0
     local identical_banners=0
@@ -4172,7 +3084,6 @@ detect_honeypot_ports() {
 
     for port in $open_ports; do
         (( checked_ports >= 5 )) && break
-        # Pomiń znane porty z unikalnymi protokołami
         echo " 22 80 443 53 " | grep -qw "$port" && { (( checked_ports++ )); continue; }
         local b
         b=$(grab_banner "$ip" "$port" 2 2>/dev/null || echo "")
@@ -4189,8 +3100,6 @@ detect_honeypot_ports() {
         (( checked_ports++ ))
     done
 
-    # --- Wskaźnik 4: Port odpowiada ZAWSZE tym samym na dowolne dane ---
-    # Wyślij losowe dane i porównaj odpowiedź z odpowiedzią bez danych
     if (( port_count_n >= 3 )); then
         local test_port=""
         for port in $open_ports; do
@@ -4225,8 +3134,6 @@ detect_honeypot_ports() {
         fi
     fi
 
-    # --- Wskaźnik 5: Puste bannery na wielu portach ---
-    # nc fake listen często milczy (accept bez send)
     if (( port_count_n >= 5 )); then
         local silent_count=0
         local test_count=0
@@ -4246,11 +3153,9 @@ detect_honeypot_ports() {
         fi
     fi
 
-    # --- Wyrok ---
     echo "$honeypot_score|$reasons"
 }
 
-# Wrapper: oceń host i zapisz wynik
 evaluate_honeypot() {
     local idx="$1"
     local ip="${D_IP[$idx]}"
@@ -4258,9 +3163,9 @@ evaluate_honeypot() {
     local pc; pc=$(port_count "$ports")
 
     [[ "$MODE" == "passive" ]] && return
-    (( pc < 3 )) && return  # za mało portów żeby oceniać
+    (( pc < 3 )) && return
 
-    log "  [HP] Analiza warstwy deception: $ip ($pc portów)" "DEBUG"
+    log "  [HP] Deception layer analysis: $ip ($pc ports)" "DEBUG"
 
     local result; result=$(detect_honeypot_ports "$ip" "$ports")
     local score="${result%%|*}"
@@ -4270,33 +3175,24 @@ evaluate_honeypot() {
     score="${score:-0}"
 
     if (( score >= 5 )); then
-        # Bardzo prawdopodobny honeypot — oznacz i dodaj finding
         D_HONEYPOT[$idx]="HIGH|$score|$reasons"
         add_finding "$idx" "INFO" "HONEYPOT_DETECTED" \
             "Host $ip wykazuje silne cechy warstwy deception (score=$score): $reasons" \
-            "Wyniki port scan dla $ip mogą być zafałszowane — zweryfikuj ręcznie"
+            "Port scan results for $ip may be falsified — verify manually"
         log "$(L honeypot_warn "${ip}" "${score}" "${reasons}")" "WARN"
     elif (( score >= 3 )); then
         D_HONEYPOT[$idx]="MEDIUM|$score|$reasons"
         add_finding "$idx" "INFO" "HONEYPOT_SUSPECT" \
             "Host $ip ma cechy warstwy deception (score=$score): $reasons" \
-            "Zweryfikuj czy otwarte porty są prawdziwe"
+            "Verify whether open ports are genuine"
         log "$(L honeypot_suspect "${ip}" "${score}" "${reasons}")" "WARN"
     else
         D_HONEYPOT[$idx]="NONE|$score"
-        log "  [HP] ✓ $ip: brak cech deception (score=$score)" "DEBUG"
+        log "  [HP] ✓ $ip: no deception characteristics (score=$score)" "DEBUG"
     fi
 }
 
-#############################################
-# STABILIZATION LAYER — PHASE 4–11 PATCH
-#############################################
-
-# Bufory surowych danych (odseparowanie od global state)
-# Frozen context (post-sensor, pre-interpretation)
 declare -A CTX
-
-
 
 _nmap_topology_seed_ports() {
     local ports=""
@@ -4378,7 +3274,6 @@ topology_nmap_assist() {
         log "  [nmap-topology] $ip: ${open_ports}" "INFO"
 
         if [[ "${TOPOLOGY_NMAP_VERSION:-1}" == "1" && "${profile}" != "light" ]]; then
-            # very light banner corroboration on already-open ports only
             local p class host_suspicious=0
             for p in $open_ports; do
                 class="$(_classify_port_type "$ip" "$p")"
@@ -4394,8 +3289,8 @@ topology_nmap_assist() {
             if (( host_suspicious == 1 )); then
                 (( suspicious_hosts++ ))
                 add_finding "$idx" "INFO" "TOPOLOGY_DECEPTION_SIGNAL" \
-                    "Wczesna walidacja topologii wskazuje na niespójne lub kształtowane odpowiedzi portów na hoście $ip" \
-                    "Traktuj kolejne aktywne próby oszczędnie; preferuj walidację ręczną i minimalny kontakt"
+                    "Early topology validation indicates inconsistent or shaped port responses on host $ip" \
+                    "Treat further active probes conservatively; prefer manual validation and minimal contact"
             fi
         fi
 
@@ -4439,7 +3334,6 @@ freeze_context() {
     log "[CTX] context frozen + normalized: fw=${CTX[firewall_type]} ids=${CTX[ids_detected]} dns_leak=${CTX[dns_leak]} ew_iso=${CTX[east_west_isolated]}" "TOPO"
 }
 
-
 declare -A RAW_PORTS=()
 declare -A RAW_BANNERS=()
 declare -A RAW_SERVICE_CLASS=()
@@ -4454,7 +3348,7 @@ PHASE4_HOSTS=()
 _safe_set() {
     local arr="$1" key="$2" val="$3"
     # shellcheck disable=SC2086
-    eval "$arr["$key"]="$val""
+    eval "${arr}["${key}"]="${val}""
 }
 
 _safe_get() {
@@ -4463,35 +3357,41 @@ _safe_get() {
     eval 'echo "${'"$arr"'["$key"]:-}"'
 }
 
-#############################################
-
-# [4] PORT PROFILING — z filtrem portów fantomowych
-
 P_CRITICAL="21 23 512 513 514 2323 4444 5555 6666 7777 8888 9999 31337 4899"
 P_HIGH="22 25 110 139 143 445 3389 5900 5901 5902 5985 5986 6379 27017 11211"
 P_MEDIUM="53 80 111 135 137 389 443 636 1433 1521 2049 3306 5432 8080 8443 9200 9300 5601"
 P_INFO="8081 8082 9090 9100 9443 10000 3000 3001 5000 8000"
 P_EXTRA="1080 1194 1723 4500 500 161 162 69 123"
 
-# Porty fantomowe / deception-like pomijane przy ocenie
-# (typowy zakres wysokiego szumu odpowiedzi: 8000-9999)
 MIRAGE_PORT_RANGE="8000-9999"
 
 get_scan_ports() {
     case "$MODE" in
-        passive) echo "22 53 80 443 445 3389 8080" ;;
+        passive) echo "" ;;  
         deep)    echo "$P_CRITICAL $P_HIGH $P_MEDIUM $P_INFO $P_EXTRA" ;;
         *)       echo "$P_CRITICAL $P_HIGH $P_MEDIUM" ;;
     esac
 }
 
 is_mirage_port() {
-    # Nie używamy już lokalnego ss -tlnp — to wykrywało tylko lokalne nc, nie zdalne
-    # Detection is handled per host by response-shaping heuristics
+    local port="${1:-0}"
+    if [[ "${TOPO[mirage_ports]:-0}" != "0" ]]; then
+        local lo="${MIRAGE_PORT_RANGE%%:*}" hi="${MIRAGE_PORT_RANGE##*:}"
+        lo="${lo:-8000}"; hi="${hi:-9999}"
+        (( port >= lo && port <= hi )) && return 0
+    fi
     return 1
 }
 
 run_port_scan() {
+    if [[ "$MODE" == "passive" ]]; then
+        log "Phase 4: Port scan SKIPPED (passive mode)" "INFO"
+        for (( i=0; i<DEV_COUNT; i++ )); do
+            _safe_set RAW_PORTS "${D_IP[$i]}" ""
+            PHASE4_HOSTS+=("${D_IP[$i]}")
+        done
+        return 0
+    fi
     log "$(L phase_4 "${DEV_COUNT}" "${MODE}")" "SECTION"
 
     if [[ "${TOPO[mirage_ports]:-0}" != "0" ]]; then
@@ -4500,10 +3400,8 @@ run_port_scan() {
 
     local port_list; port_list=$(get_scan_ports)
     local pc; pc=$(echo "$port_list" | wc -w)
-    log "Portów per host: $pc"
+    log "Ports per host: $pc"
 
-    # ── Scan per-host: GNU parallel jeśli dostępny, fallback bash &/wait ──────
-    # scan_one_host IP INDEX PORTLIST TMPDIR → wynik do pliku
     _scan_one_host() {
         local _ip="$1" _idx="$2" _plist="$3" _tdir="$4"
         local _raw; _raw=$(scan_ports_parallel "$_ip" "$_plist" "$MAX_PARALLEL" 1)
@@ -4518,11 +3416,10 @@ run_port_scan() {
     export -f _scan_one_host scan_ports_parallel probe_port_adaptive is_mirage_port log progress 2>/dev/null || true
 
     local _scan_tmp; _scan_tmp=$(mktemp -d)
-    local _host_parallel=4  # równoległe hosty (porty i tak już parallel per host)
+    local _host_parallel=4
 
     if command -v parallel &>/dev/null; then
-        # GNU parallel: N hostów jednocześnie
-        log "  [parallel] GNU parallel dostępny — skanowanie hostów równolegle (j=$_host_parallel)"
+        log "  [parallel] GNU parallel available — parallel host scanning (j=$_host_parallel)"
         local _args=()
         for (( i=0; i<DEV_COUNT; i++ )); do
             _args+=("${D_IP[$i]}:::$i:::$port_list:::$_scan_tmp")
@@ -4530,7 +3427,6 @@ run_port_scan() {
         printf '%s
 ' "${_args[@]}" |             parallel --jobs "$_host_parallel" --colsep ':::'                 'bash -c '"'"'_scan_one_host "$1" "$2" "$3" "$4"'"'"' _ {1} {2} {3} {4}'                 2>/dev/null || true
     else
-        # Bash background jobs fallback
         local _active=0
         for (( i=0; i<DEV_COUNT; i++ )); do
             local ip="${D_IP[$i]}"
@@ -4542,22 +3438,20 @@ run_port_scan() {
         wait
     fi
 
-    # Zbierz wyniki
     for (( i=0; i<DEV_COUNT; i++ )); do
         if [[ -f "$_scan_tmp/$i" ]]; then
             IFS='|' read -r _idx _ports _mc < "$_scan_tmp/$i"
             _safe_set RAW_PORTS "${D_IP[$i]}" "${_ports}"
             PHASE4_HOSTS+=("${D_IP[$i]}")
-            log "  ${D_IP[$i]}: ${_ports:-brak} (odfiltrowano $_mc mirage portów)"
+            log "  ${D_IP[$i]}: ${_ports:-none} (filtered $_mc mirage ports)"
         else
             _safe_set RAW_PORTS "${D_IP[$i]}" ""
             PHASE4_HOSTS+=("${D_IP[$i]}")
-            log "  ${D_IP[$i]}: brak danych (błąd skanowania)"
+            log "  ${D_IP[$i]}: no data (scan error)"
         fi
     done
     rm -rf "$_scan_tmp"
 
-    # Behawioralna detekcja honeypot/mirage per host
     if [[ "$MODE" != "passive" ]]; then
         log "$(L hp_section)" "SECTION"
         for (( i=0; i<DEV_COUNT; i++ )); do
@@ -4566,8 +3460,6 @@ run_port_scan() {
     fi
     echo ""
 }
-
-# [5] BANNER GRAB
 
 declare -A BANNER_PORTS=(
     [22]="SSH"    [21]="FTP"    [23]="Telnet"  [25]="SMTP"   [110]="POP3"
@@ -4583,9 +3475,9 @@ declare -A BANNER_PORTS=(
 declare -A HTTP_PORTS=(
     [80]=1 [443]=1 [8080]=1 [8443]=1 [8000]=1 [3000]=1
     [3001]=1 [8008]=1 [8888]=1 [9090]=1 [9443]=1 [10000]=1
-    [8006]=1  # Proxmox web UI
+    [8006]=1
     [15672]=1 # RabbitMQ management
-    [5601]=1  # Kibana
+    [5601]=1
 )
 
 run_banner_grab() {
@@ -4613,8 +3505,6 @@ run_banner_grab() {
     done
 }
 
-# [6] KLASYFIKACJA
-
 classify_all() {
     log "$(L phase_6)" "SECTION"
 
@@ -4623,14 +3513,12 @@ classify_all() {
         local ports; ports="$(_safe_get RAW_PORTS "$ip")" ttl="${D_TTL[$i]}" vendor="${D_VENDOR[$i]}"
 
         local os="Unknown"
-        # Warstwa 1: TTL heurystyka (może być znormalizowane przez router)
         if   (( ttl >= 110 && ttl <= 128 )); then os="Windows"
         elif (( ttl >= 55  && ttl <= 64  )); then os="Linux/Unix"
         elif (( ttl >= 240 ));               then os="Network OS"
         elif (( ttl >= 200 ));               then os="Solaris/BSD"
         elif (( ttl >= 65  && ttl <= 70  )); then os="Linux/Unix"
         fi
-        # Warstwa 2: vendor OUI prefix
         case "$vendor" in
             Apple*)                               os="macOS/iOS" ;;
             *Raspberry*|*Pi*)                     os="Linux (RPi)" ;;
@@ -4639,7 +3527,6 @@ classify_all() {
             *QEMU*)                               os="Linux/VM (QEMU)" ;;
         esac
 
-        # Warstwa 3: bannery SSH/HTTP/service (najwyższy priorytet)
         local banners="${D_BANNERS[$i]}"
         echo "$banners" | grep -qi "windows\|microsoft\|IIS"      && os="Windows"
         echo "$banners" | grep -qi "ubuntu\|debian\|centos\|rhel\|fedora\|linux" && os="Linux"
@@ -4653,7 +3540,6 @@ classify_all() {
         echo "$banners" | grep -qi "Synology\|DSM"                && os="Synology DSM"
         echo "$banners" | grep -qi "UniFi\|EdgeOS\|Ubiquiti"      && os="Ubiquiti OS"
 
-        # Warstwa 4: port combinations fingerprint
         local ports_local="${D_PORTS[$i]}"
         contains_port "$ports_local" 8006                          && os="Linux (Proxmox VE)"
         contains_port "$ports_local" 2375 || contains_port "$ports_local" 2376                                                                    && os="Linux (Docker host)"
@@ -4664,7 +3550,7 @@ classify_all() {
 
         D_OS[$i]="$os"
 
-        local role="Nieznany host"
+        local role="Unknown host"
         if   [[ "$ip" == "$GATEWAY_IP" ]]; then
             role="Router / Gateway"
         elif contains_port "$ports" 3389 && contains_port "$ports" 445; then
@@ -4716,7 +3602,6 @@ classify_all() {
         fi
 
         local seg="UNKNOWN"
-        # Segmentacja przez TTL variation + rola + ARP distance
         if   [[ "$ip" == "$GATEWAY_IP" ]]; then
             seg="GATEWAY"
         elif [[ "$role" == *"Router"* || "$role" == *"Gateway"* ]]; then
@@ -4732,7 +3617,6 @@ classify_all() {
         elif [[ "$os" == "Windows"* ]]; then
             seg="USER_LAN"
         else
-            # Fallback: TTL-based heurystyka — podatna na normalizację przez middleboxy
             local gw_ttl="${TOPO[gw_ttl]:-64}"
             local host_ttl="${ttl:-64}"
             local ttl_diff=$(( gw_ttl - host_ttl ))
@@ -4741,16 +3625,13 @@ classify_all() {
             elif (( ttl_diff <= 3 )); then seg="USER_LAN~"
             else                          seg="PERIPHERAL~"
             fi
-            # ~ = segment szacunkowy (TTL heuristic, wymaga weryfikacji)
         fi
 
         _safe_set RAW_SERVICE_CLASS "$ip" "$role"
         D_SEGMENT[$i]="$seg"
-        log "  ${ip}: role=$role os=$os seg=$seg ports=[${ports:-brak}]"
+        log "  ${ip}: role=$role os=$os seg=$seg ports=[${ports:-none}]"
     done
 }
-
-# [7] SERVICE VERIFICATION
 
 verify_services() {
     [[ "$MODE" == "passive" ]] && return
@@ -4761,22 +3642,20 @@ verify_services() {
         local ports; ports="$(_safe_get RAW_PORTS "$ip")"
         [[ -z "$ports" ]] && continue
 
-        # SSH
         if contains_port "$ports" 22; then
             local ssh_banner; ssh_banner=$(grab_banner "$ip" 22 3)
             if echo "$ssh_banner" | grep -qi "SSH"; then
                 local ssh_ver; ssh_ver=$(echo "$ssh_banner" | grep -oP 'SSH-[0-9.]+' | head -1)
                 if echo "$ssh_ver" | grep -q "SSH-1\."; then
                     add_finding $i "CRITICAL" "PROTOKÓŁ" \
-                        "SSH v1 na $ip: przestarzały protokół (MITM, session hijack)" \
-                        "Wyłącz SSHv1. Wymuś Protocol 2."
+                        "SSH v1 on $ip: obsolete protocol (MITM, session hijack)" \
+                        "Disable SSHv1. Enforce Protocol 2."
                 else
                     add_verified $i "SSH_RUNNING" "$ssh_banner"
                 fi
             fi
         fi
 
-        # HTTP → HTTPS redirect
         if contains_port "$ports" 80 && [[ -n "${T[curl]:-}" ]]; then
             local http_resp; http_resp=$(grab_http_banner "http://${ip}/" 4)
             local http_code; http_code=$(echo "$http_resp" | awk '{print $1}')
@@ -4788,23 +3667,22 @@ verify_services() {
                     log "  VERIFIED: $ip HTTP→HTTPS ✓"
                 else
                     add_finding $i "MEDIUM" "SZYFROWANIE" \
-                        "HTTP port 80 na $ip przekierowuje do $http_redir (nie HTTPS)" \
+                        "HTTP port 80 on $ip redirects to $http_redir (not HTTPS)" \
                         "Skonfiguruj redirect HTTP→HTTPS"
                 fi
             elif [[ -n "$http_code" && "$http_code" != "000" ]]; then
                 if ! contains_port "$ports" 443; then
                     add_finding $i "HIGH" "SZYFROWANIE" \
-                        "HTTP port 80 na $ip serwuje content bez HTTPS (kod: $http_code)" \
-                        "Wdróż TLS. Wymuś redirect HTTP→HTTPS."
+                        "HTTP port 80 on $ip serwuje content without HTTPS (kod: $http_code)" \
+                        "Deploy TLS. Enforce HTTP→HTTPS redirect."
                 else
                     add_finding $i "MEDIUM" "SZYFROWANIE" \
-                        "HTTP i HTTPS dostępne na $ip bez wymuszenia redirect (kod: $http_code)" \
-                        "Wymuś redirect HTTP→HTTPS. Dodaj HSTS."
+                        "HTTP and HTTPS available on $ip without forced redirect (code: $http_code)" \
+                        "Enforce HTTP→HTTPS redirect. Add HSTS."
                 fi
             fi
         fi
 
-        # HTTPS HSTS
         if contains_port "$ports" 443 && [[ -n "${T[curl]:-}" ]]; then
             local https_headers; https_headers=$(get_http_headers "https://${ip}/" 4)
             if echo "$https_headers" | grep -qi "Strict-Transport-Security"; then
@@ -4812,8 +3690,8 @@ verify_services() {
                 log "  VERIFIED: $ip HSTS ✓"
             else
                 add_finding $i "LOW" "SZYFROWANIE" \
-                    "HTTPS na $ip bez nagłówka HSTS – możliwy downgrade do HTTP" \
-                    "Dodaj: Strict-Transport-Security: max-age=31536000; includeSubDomains"
+                    "HTTPS on $ip without nagłówka HSTS – możliwy downgrade do HTTP" \
+                    "Add: Strict-Transport-Security: max-age=31536000; includeSubDomains"
             fi
 
             local missing_headers=""
@@ -4822,106 +3700,92 @@ verify_services() {
             echo "$https_headers" | grep -qi "Content-Security-Policy" || missing_headers="$missing_headers CSP"
             if [[ -n "${missing_headers# }" ]]; then
                 add_finding $i "LOW" "HARDENING" \
-                    "Brakujące security headers HTTP na $ip:443 – ${missing_headers# }" \
-                    "Dodaj brakujące nagłówki bezpieczeństwa."
+                    "Missing HTTP security headers on $ip:443 – ${missing_headers# }" \
+                    "Add missing security headers."
             fi
         fi
 
-        # Redis
         if contains_port "$ports" 6379; then
             local redis_resp; redis_resp=$(echo -e "PING\r\n" | timeout 3 ${T[nc_cmd]:-cat} -w3 "$ip" 6379 2>/dev/null | head -1 | tr -d '\r\n' || echo "")
             if echo "$redis_resp" | grep -qi "PONG"; then
-                add_finding $i "CRITICAL" "KRADZIEŻ_DANYCH" \
-                    "Redis na $ip:6379 dostępny BEZ uwierzytelnienia – pełny dostęp, możliwe RCE" \
-                    "Dodaj requirepass. Ogranicz bind do localhost."
+                add_finding $i "CRITICAL" "DATA_THEFT" \
+                    "Redis on $ip:6379 accessible WITHOUT authentication — full access, possible RCE" \
+                    "Add requirepass. Restrict bind to localhost."
             elif echo "$redis_resp" | grep -qi "NOAUTH\|Authentication"; then
-                add_verified $i "REDIS_AUTH_REQUIRED" "Redis wymaga auth"
+                add_verified $i "REDIS_AUTH_REQUIRED" "Redis requires auth"
             fi
         fi
 
-        # SMB/NetBIOS — hostname, domain, OS disclosure
         if contains_port "$ports" 445 || contains_port "$ports" 139; then
-            # NetBIOS Name Service query (UDP 137) przez nc TCP fallback
             local smb_banner; smb_banner=$(grab_banner "$ip" 445 2 2>/dev/null || echo "")
             if [[ -n "$smb_banner" ]]; then
-                # Wyciągnij hostname z SMB negotiate response
                 local smb_host; smb_host=$(echo "$smb_banner" | strings 2>/dev/null |                     grep -oP '[A-Z0-9_-]{3,15}' | head -1 || echo "")
                 [[ -n "$smb_host" ]] && add_verified $i "SMB_HOSTNAME" "SMB:$smb_host"
             fi
-            # nmblookup jeśli dostępny
             if command -v nmblookup &>/dev/null; then
                 local nbt; nbt=$(nmblookup -A "$ip" 2>/dev/null | grep -v "^Looking\|^\s*$" | head -3 || echo "")
                 [[ -n "$nbt" ]] && add_verified $i "NETBIOS_INFO" "$nbt"
             fi
         fi
 
-        # SNMP — community string probe (v1/v2c)
         if contains_port "$ports" 161 && command -v snmpwalk &>/dev/null; then
             for community in public private community admin; do
                 local snmp_out; snmp_out=$(timeout 3 snmpwalk -v2c -c "$community"                     -On "$ip" .1.3.6.1.2.1.1.1.0 2>/dev/null | head -1 || echo "")
                 if [[ -n "$snmp_out" ]]; then
-                    add_finding $i "HIGH" "SNMP_OPEN"                         "SNMP community='$community' na $ip — system info disclosure, możliwa rekonfiguracja"                         "Usuń publiczne community strings. Wdróż SNMPv3 z auth+priv."
+                    add_finding $i "HIGH" "SNMP_OPEN"                         "SNMP community='$community' on $ip — system info disclosure, możliwa rekonfiguracja"                         "Remove public community strings. Deploy SNMPv3 with auth+priv."
                     add_verified $i "SNMP_COMMUNITY" "community=$community sysDescr=$(echo "$snmp_out" | cut -c1-60)"
                     break
                 fi
             done
         elif contains_port "$ports" 161; then
-            # Bez snmpwalk — prosty UDP probe przez /dev/udp
             local snmp_probe
-            snmp_probe=$(printf '0& public   00	+ ' |                 timeout 2 bash -c "cat > /dev/udp/$ip/161" 2>/dev/null && echo "SENT" || echo "")
-            [[ -n "$snmp_probe" ]] && add_finding $i "MEDIUM" "SNMP_PORT"                 "SNMP port 161 otwarty na $ip — sprawdź community strings ręcznie"                 "snmpwalk -v2c -c public $ip .1.3.6.1.2.1.1"
+            snmp_probe=$(printf '0&\x00public \x00\x0000	+\x00' |                 timeout 2 bash -c "cat > /dev/udp/$ip/161" 2>/dev/null && echo "SENT" || echo "")
+            [[ -n "$snmp_probe" ]] && add_finding $i "MEDIUM" "SNMP_PORT"                 "SNMP port 161 open on $ip — check community strings manually"                 "snmpwalk -v2c -c public $ip .1.3.6.1.2.1.1"
         fi
 
-        # Telnet
         if contains_port "$ports" 23 || contains_port "$ports" 2323; then
             local tport=23; contains_port "$ports" 2323 && tport=2323
-            add_finding $i "CRITICAL" "KRADZIEŻ_HASEŁ" \
-                "Telnet na $ip:$tport – dane i hasła jawnym tekstem. Sygnatura IoT/Mirai." \
-                "NATYCHMIAST wyłącz Telnet. Zastąp SSH."
+            add_finding $i "CRITICAL" "CREDENTIAL_THEFT" \
+                "Telnet on $ip:$tport — credentials and data in cleartext. Common IoT/Mirai exposure signature." \
+                "Disable Telnet immediately. Replace it with SSH."
         fi
 
-        # Docker API (unauthenticated = full host takeover)
         if contains_port "$ports" 2375; then
             local docker_resp; docker_resp=$(grab_http_banner "http://${ip}:2375/version" 3 2>/dev/null || echo "")
             if echo "$docker_resp" | grep -qi "Version\|docker\|ApiVersion"; then
-                add_finding $i "CRITICAL" "CONTAINER_ESCAPE"                     "Docker API OTWARTE (bez TLS/auth) na $ip:2375 — pełne przejęcie hosta przez escape kontenera"                     "NATYCHMIAST zablokuj port 2375. Włącz TLS: dockerd --tlsverify. Ogranicz do localhost."
+                add_finding $i "CRITICAL" "CONTAINER_ESCAPE"                     "Docker API open without TLS/auth on $ip:2375 — full host takeover risk via container escape"                     "Block port 2375 immediately. Enable TLS with dockerd --tlsverify and restrict access to localhost."
                 add_verified $i "DOCKER_API_OPEN" "$docker_resp"
             fi
         fi
 
-        # Kubernetes API Server (unauthenticated)
         if contains_port "$ports" 6443 || contains_port "$ports" 8001; then
             local k8s_port=6443; contains_port "$ports" 8001 && k8s_port=8001
             local k8s_resp; k8s_resp=$(grab_http_banner "https://${ip}:${k8s_port}/api/v1" 4 2>/dev/null || echo "")
             if echo "$k8s_resp" | grep -qi "apiVersion\|kubernetes\|Unauthorized"; then
                 if echo "$k8s_resp" | grep -qi ""kind"\|"apiVersion"" &&                    ! echo "$k8s_resp" | grep -qi "Unauthorized\|401\|403"; then
-                    add_finding $i "CRITICAL" "K8S_UNAUTHENTICATED"                         "Kubernetes API Server dostępny BEZ uwierzytelnienia na $ip:$k8s_port"                         "Włącz RBAC. Ogranicz API server do sieci zarządzania."
+                    add_finding $i "CRITICAL" "K8S_UNAUTHENTICATED"                         "Kubernetes API Server accessible WITHOUT authentication on $ip:$k8s_port"                         "Enable RBAC. Restrict API server to management network."
                 else
                     add_verified $i "K8S_API_SERVER" "K8S API @ $ip:$k8s_port (auth required)"
                 fi
             fi
         fi
 
-        # etcd (Kubernetes backing store — unauthenticated = cluster takeover)
         if contains_port "$ports" 2379; then
             local etcd_resp; etcd_resp=$(grab_http_banner "http://${ip}:2379/version" 3 2>/dev/null || echo "")
             if echo "$etcd_resp" | grep -qi "etcdserver\|etcdcluster"; then
-                add_finding $i "CRITICAL" "ETCD_OPEN"                     "etcd (Kubernetes) dostępny bez auth na $ip:2379 — pełny odczyt/zapis secrets klastra"                     "Włącz TLS client auth dla etcd. Ogranicz do sieci control plane."
+                add_finding $i "CRITICAL" "ETCD_OPEN"                     "etcd (Kubernetes) accessible without auth on $ip:2379 — full read/write cluster secrets"                     "Enable TLS client auth for etcd. Restrict to control plane network."
             fi
         fi
 
-        # Backdoor ports
         for bport in 4444 1337 31337 6666 7777 9999 4899; do
             if contains_port "$ports" "$bport"; then
                 add_finding $i "CRITICAL" "POTENCJALNY_BACKDOOR" \
-                    "Port $bport na $ip – charakterystyczny dla Metasploit/C2/backdoor. Wymaga dochodzenia." \
+                    "Port $bport on $ip — characteristic of Metasploit/C2/backdoor. Requires investigation." \
                     "IZOLUJ HOST. Analiza forensic: netstat -antp"
             fi
         done
     done
 }
-
-# [8] DNS AUDIT
 
 declare -A DNS_AUDIT=(
     [internal_resolver]="" [resolver_responds]="0" [external_dns_reachable]="0"
@@ -4929,9 +3793,6 @@ declare -A DNS_AUDIT=(
     [dnssec]="0" [leak_test_result]=""
 )
 
-# [8a] UDP SERVICE DETECTION
-# Sprawdza usługi UDP które są niewidoczne przez TCP-only scan:
-# DNS/53, NTP/123, SNMP/161, TFTP/69, SSDP/1900, mDNS/5353, NetBIOS/137
 audit_udp() {
     [[ "$MODE" == "passive" ]] && return
     log "[UDP] UDP service detection" "SECTION"
@@ -4939,64 +3800,51 @@ audit_udp() {
     for (( i=0; i<DEV_COUNT; i++ )); do
         local ip="${D_IP[$i]}"
 
-        # DNS/53 UDP — sprawdź czy host jest resolverem
         local dns_resp
         if [[ -n "${T[dig]:-}" ]]; then
             dns_resp=$(timeout 2 dig +time=1 +tries=1 +noall +answer @"$ip" version.bind chaos TXT 2>/dev/null                 || timeout 2 dig +time=1 +tries=1 +noall +answer @"$ip" example.com A 2>/dev/null || echo "")
             if [[ -n "$dns_resp" ]]; then
                 add_verified $i "UDP_DNS_OPEN" "DNS resolver @ $ip:53/udp"
-                # Wersja BIND disclosure
                 local bind_ver; bind_ver=$(timeout 2 dig +time=1 @"$ip" version.bind chaos TXT +short 2>/dev/null || echo "")
                 if [[ -n "$bind_ver" ]]; then
-                    add_finding $i "MEDIUM" "DNS_VERSION_DISCLOSURE"                         "DNS version disclosure na $ip: $bind_ver — ułatwia targetowanie znanych CVE"                         "Wyłącz: options { version 'none'; }; w named.conf"
+                    add_finding $i "MEDIUM" "DNS_VERSION_DISCLOSURE"                         "DNS version disclosure on $ip: $bind_ver — facilitates targeting known CVEs"                         "Disable: options { version 'none'; }; w named.conf"
                 fi
             fi
         fi
 
-        # NTP/123 UDP — sprawdź monlist (amplification vector)
         local ntp_resp
-        ntp_resp=$(printf ' *%0.s' '' |             timeout 2 bash -c "cat > /dev/udp/$ip/123 && cat < /dev/udp/$ip/123" 2>/dev/null | awk '{print $1+0}' || echo "0")
+        ntp_resp=$(printf '\x00*%0.s' '' |             timeout 2 bash -c "cat > /dev/udp/$ip/123 && cat < /dev/udp/$ip/123" 2>/dev/null | awk '{print $1+0}' || echo "0")
         if (( ${ntp_resp//[^0-9]/} > 10 )); then
             add_verified $i "UDP_NTP_OPEN" "NTP @ $ip:123/udp"
-            # Monlist probe (5 bajtów request → duży response = amplification)
             local ntp_mode7
-            ntp_mode7=$(printf ' *%0.s' '' |                 timeout 2 bash -c "cat > /dev/udp/$ip/123 && cat < /dev/udp/$ip/123" 2>/dev/null | awk '{print $1+0}' || echo "0")
+            ntp_mode7=$(printf '\x00*%0.s' '' |                 timeout 2 bash -c "cat > /dev/udp/$ip/123 && cat < /dev/udp/$ip/123" 2>/dev/null | awk '{print $1+0}' || echo "0")
             if (( ${ntp_mode7//[^0-9]/} > 100 )); then
-                add_finding $i "HIGH" "UDP_AMPLIFICATION"                     "NTP monlist aktywny na $ip:123 — współczynnik amplifikacji do 556x, wektor DDoS"                     "ntpdc -c 'disable monitor' lub ogranicz: restrict default kod nomodify nopeer noquery notrap"
+                add_finding $i "HIGH" "UDP_AMPLIFICATION"                     "NTP monlist active on $ip:123 — amplification factor up to 556x, DDoS vector"                     "ntpdc -c 'disable monitor' or restrict: restrict default kod nomodify nopeer noquery notrap"
             fi
         fi
 
-        # SNMP/161 UDP — community string probe bez snmpwalk
-        # Wysyłamy GetRequest PDU dla sysDescr (OID .1.3.6.1.2.1.1.1.0)
         local snmp_req snmp_resp
-        # SNMP v2c GetRequest z community "public" — minimalne PDU
-        snmp_req=$(printf '0&public      00	+ ')
+        snmp_req=$(printf '0&public \x00\x00\x00\x00\x0000	+\x00')
         snmp_resp=$(echo -n "$snmp_req" |             timeout 2 bash -c "cat > /dev/udp/$ip/161" 2>/dev/null && echo "SENT" || echo "")
-        # Fallback: nc -u jeśli dostępny
         if [[ -z "$snmp_resp" && -n "${T[nc_cmd]:-}" ]]; then
             snmp_resp=$(echo -e "$snmp_req" |                 timeout 2 ${T[nc_cmd]} -u -w2 "$ip" 161 2>/dev/null | head -1 || echo "")
         fi
         if [[ -n "$snmp_resp" && "$snmp_resp" != "SENT" ]] ||            echo "$snmp_resp" | grep -qP '[0-5]'; then
-            add_finding $i "HIGH" "SNMP_OPEN"                 "SNMP v2c community='public' odpowiedział na $ip:161/udp"                 "Wyłącz SNMPv1/v2c. Wdróż SNMPv3 z auth+priv (SHA/AES). Ogranicz ACL."
+            add_finding $i "MEDIUM" "SNMP_OPEN"                 "SNMP v2c community='public' responded on $ip:161/udp (UDP probe — verify with snmpwalk)"                 "Disable SNMPv1/v2c. Deploy SNMPv3 with auth+priv (SHA/AES). Restrict ACLs."
         fi
 
-        # NetBIOS/137 UDP — Name Service query
-        # Zwraca hostname, domain, MAC (passive recon goldmine)
         if [[ -n "${T[nmblookup]:-}" ]]; then
             local nbt_out; nbt_out=$(timeout 3 nmblookup -A "$ip" 2>/dev/null |                 grep -v "^Looking\|^$\|Use of" | head -5 || echo "")
             if [[ -n "$nbt_out" ]]; then
                 add_verified $i "UDP_NETBIOS_INFO" "NetBIOS: $(echo "$nbt_out" | tr '
 ' ';' | cut -c1-80)"
-                # Workgroup/domain disclosure
                 local nb_domain; nb_domain=$(echo "$nbt_out" | awk '/<00>/ && /GROUP/{print $1}' | head -1)
                 [[ -n "$nb_domain" ]] && add_verified $i "AD_NETBIOS_DOMAIN" "Domain: $nb_domain"
             fi
         fi
 
-        # mDNS/5353 UDP — Bonjour/Avahi (discloses hostname, services, OS)
         local mdns_resp
-        mdns_resp=$(timeout 2 bash -c             "printf '           local  ÿ '              > /dev/udp/224.0.0.251/5353" 2>/dev/null && echo "sent" || echo "")
-        # Sprawdź też unicast mDNS na hoście
+        mdns_resp=$(timeout 2 bash -c             "printf '\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00local\x00\x00ÿ\x00'              > /dev/udp/224.0.0.251/5353" 2>/dev/null && echo "sent" || echo "")
         if [[ -n "${T[dig]:-}" ]]; then
             local mdns_host; mdns_host=$(timeout 2 dig +time=1 +tries=1                 @"$ip" -p 5353 -t PTR _services._dns-sd._udp.local 2>/dev/null |                 awk '/ANSWER/{a=1;next} a && /PTR/{print $NF}' | head -3 || echo "")
             if [[ -n "$mdns_host" ]]; then
@@ -5005,7 +3853,6 @@ audit_udp() {
             fi
         fi
 
-        # SSDP/1900 UDP — UPnP (discloses device type, firmware version)
         local ssdp_req="M-SEARCH * HTTP/1.1
 HOST: 239.255.255.250:1900
 MAN: "ssdp:discover"
@@ -5017,21 +3864,19 @@ ST: ssdp:all
         ssdp_resp=$(printf "$ssdp_req" |             timeout 2 ${T[nc_cmd]:-bash -c "cat > /dev/udp/$ip/1900"} -u -w2 "$ip" 1900 2>/dev/null |             head -5 || echo "")
         if echo "$ssdp_resp" | grep -qi "HTTP/1\|Server:\|Location:"; then
             local ssdp_server; ssdp_server=$(echo "$ssdp_resp" | grep -i "Server:" | head -1 || echo "")
-            add_finding $i "MEDIUM" "UPNP_SSDP"                 "UPnP/SSDP aktywny na $ip:1900/udp — device disclosure: ${ssdp_server:0:60}"                 "Wyłącz UPnP na urządzeniach produkcyjnych. Zablokuj SSDP na firewallu."
+            add_finding $i "MEDIUM" "UPNP_SSDP"                 "UPnP/SSDP active on $ip:1900/udp — device disclosure: ${ssdp_server:0:60}"                 "Disable UPnP on production devices. Block SSDP at firewall."
             add_verified $i "UDP_SSDP_INFO" "${ssdp_server:0:80}"
         fi
 
-        # TFTP/69 UDP — anonymous file read/write (często na network devices)
         local tftp_resp
-        tftp_resp=$(printf ' test octet ' |             timeout 2 bash -c "cat > /dev/udp/$ip/69 && cat < /dev/udp/$ip/69" 2>/dev/null | awk '{print $1+0}' || echo "0")
+        tftp_resp=$(printf '\x00test\x00octet\x00' |             timeout 2 bash -c "cat > /dev/udp/$ip/69 && cat < /dev/udp/$ip/69" 2>/dev/null | awk '{print $1+0}' || echo "0")
         if (( ${tftp_resp:-0} > 4 )); then
-            add_finding $i "HIGH" "TFTP_OPEN"                 "TFTP otwarty na $ip:69/udp — anonimowy odczyt/zapis plików (konfiguracje, IOS images)"                 "Wyłącz TFTP lub ogranicz dostęp do sieci zarządzania."
+            add_finding $i "HIGH" "TFTP_OPEN"                 "TFTP open on $ip:69/udp — anonymous read/write (configs, IOS images)"                 "Disable TFTP or restrict access to management network."
         fi
 
     done
-    log "[UDP] UDP scan zakończony" "OK"
+    log "[UDP] UDP scan complete" "OK"
 }
-
 
 audit_dns() {
     log "$(L phase_8)" "SECTION"
@@ -5060,24 +3905,14 @@ audit_dns() {
     fi
 }
 
-
-# [9] EGRESS AUDIT
-
 declare -A EGRESS=(
     [http_out]="0" [https_out]="0" [smtp_out]="0" [ftp_out]="0"
     [c2_ports]="" [tor_risk]="0" [wan_ip_blacklisted]="0"
 )
 
-# [9a] TLS/CERTIFICATE AUDIT PER HOST
-# Dla każdego hosta z otwartymi portami TLS sprawdza:
-#   - ważność certyfikatu (expiry)
-#   - słabe algorytmy (SHA1, MD5, RC4, DES, 3DES, SSLv2/v3/TLS1.0/1.1)
-#   - self-signed (brak chain of trust)
-#   - SAN mismatch (hostname ≠ certyfikat)
-#   - wildcard overuse
 audit_tls() {
     [[ "$MODE" == "passive" ]] && return
-    [[ -z "${T[openssl]:-}" ]] && log "[TLS] openssl niedostępny — pominięto TLS audit" "WARN" && return
+    [[ -z "${T[openssl]:-}" ]] && log "[TLS] openssl unavailable — TLS audit skipped" "WARN" && return
 
     log "[TLS] TLS/Certificate audit" "SECTION"
     local tls_ports="443 8443 8006 5601 15672 636 993 995 587 465"
@@ -5090,7 +3925,6 @@ audit_tls() {
         for tport in $tls_ports; do
             contains_port "$ports" "$tport" || continue
 
-            # Pobierz certyfikat
             local cert_raw
             cert_raw=$(timeout 6 bash -c "
                 echo | ${T[openssl]} s_client                     -connect '${ip}:${tport}'                     -servername '${ip}'                     -showcerts 2>/dev/null" 2>/dev/null || echo "")
@@ -5100,7 +3934,6 @@ audit_tls() {
             cert_pem=$(echo "$cert_raw" |                 awk '/BEGIN CERTIFICATE/{c=1} c{print} /END CERTIFICATE/{if(c==1)exit}')
             [[ -z "$cert_pem" ]] && continue
 
-            # Expiry date
             local not_after
             not_after=$(echo "$cert_pem" |                 ${T[openssl]} x509 -noout -enddate 2>/dev/null | sed 's/notAfter=//' || echo "")
             if [[ -n "$not_after" ]]; then
@@ -5110,17 +3943,16 @@ audit_tls() {
                 days_left=$(( (exp_epoch - now_epoch) / 86400 ))
 
                 if (( days_left < 0 )); then
-                    add_finding $i "HIGH" "TLS_EXPIRED"                         "Certyfikat TLS WYGASŁ na $ip:$tport ($not_after) — przeglądarki blokują połączenie, MITM risk"                         "Odnów certyfikat NATYCHMIAST. Let's Encrypt: certbot renew --force-renewal"
+                    add_finding $i "HIGH" "TLS_EXPIRED"                         "TLS certificate expired on $ip:$tport ($not_after) — clients will reject the connection; MITM risk increases"                         "Renew the certificate immediately. Example: certbot renew --force-renewal"
                 elif (( days_left <= 14 )); then
-                    add_finding $i "HIGH" "TLS_EXPIRING_SOON"                         "Certyfikat TLS wygasa za ${days_left} dni na $ip:$tport ($not_after)"                         "Odnów certyfikat. Ustaw auto-renewal (certbot/acme.sh)."
+                    add_finding $i "HIGH" "TLS_EXPIRING_SOON"                         "TLS certificate expires in ${days_left} days on $ip:$tport ($not_after)"                         "Renew certificate. Set up auto-renewal (certbot/acme.sh)."
                 elif (( days_left <= 30 )); then
-                    add_finding $i "MEDIUM" "TLS_EXPIRING_SOON"                         "Certyfikat TLS wygasa za ${days_left} dni na $ip:$tport"                         "Zaplanuj odnowienie. Auto-renewal: certbot renew --pre-hook"
+                    add_finding $i "MEDIUM" "TLS_EXPIRING_SOON"                         "TLS certificate expires in ${days_left} days on $ip:$tport"                         "Zaplanuj odnowienie. Auto-renewal: certbot renew --pre-hook"
                 else
                     add_verified $i "TLS_CERT_VALID" "TLS $ip:$tport — ${days_left}d do wygaśnięcia"
                 fi
             fi
 
-            # Self-signed check
             local issuer subject
             issuer=$(echo "$cert_pem" | ${T[openssl]} x509 -noout -issuer 2>/dev/null || echo "")
             subject=$(echo "$cert_pem" | ${T[openssl]} x509 -noout -subject 2>/dev/null || echo "")
@@ -5128,18 +3960,16 @@ audit_tls() {
                 local iss_cn; iss_cn=$(echo "$issuer" | grep -oP 'CN\s*=\s*\K[^,/]+' | head -1 || echo "")
                 local sub_cn; sub_cn=$(echo "$subject" | grep -oP 'CN\s*=\s*\K[^,/]+' | head -1 || echo "")
                 if [[ "$iss_cn" == "$sub_cn" && -n "$iss_cn" ]]; then
-                    add_finding $i "HIGH" "TLS_SELF_SIGNED"                         "Self-signed certyfikat na $ip:$tport (CN=$sub_cn) — brak chain of trust, MITM trivial"                         "Wdróż certyfikat z zaufanego CA (Let's Encrypt, DigiCert, internal PKI)."
+                    add_finding $i "HIGH" "TLS_SELF_SIGNED"                         "Self-signed certificate on $ip:$tport (CN=$sub_cn) — no chain of trust, MITM trivial"                         "Deploy certificate from trusted CA (Let's Encrypt, DigiCert, internal PKI)."
                 fi
             fi
 
-            # Słaby algorytm podpisu (SHA1/MD5)
             local sig_algo
             sig_algo=$(echo "$cert_pem" |                 ${T[openssl]} x509 -noout -text 2>/dev/null |                 grep -i "Signature Algorithm" | head -1 | awk '{print $NF}' || echo "")
             if echo "$sig_algo" | grep -qi "sha1\|md5\|md2"; then
-                add_finding $i "HIGH" "TLS_WEAK_CIPHER"                     "Słaby algorytm podpisu certyfikatu na $ip:$tport: $sig_algo"                     "Wymień certyfikat z SHA-256 lub wyższym. SHA-1 wycofany przez wszystkie CA."
+                add_finding $i "HIGH" "TLS_WEAK_CIPHER"                     "Weak certificate signature algorithm on $ip:$tport: $sig_algo"                     "Replace certificate with SHA-256 or higher. SHA-1 deprecated by all CAs."
             fi
 
-            # Protokół TLS — sprawdź obsługę starych wersji
             for bad_proto in ssl2 ssl3 tls1 tls1_1; do
                 local proto_test
                 proto_test=$(timeout 4 bash -c "
@@ -5152,38 +3982,39 @@ audit_tls() {
                         tls1)   proto_name="TLS 1.0" ;;
                         tls1_1) proto_name="TLS 1.1" ;;
                     esac
-                    add_finding $i "HIGH" "TLS_WEAK_CIPHER"                         "Przestarzały protokół $proto_name akceptowany na $ip:$tport"                         "Wyłącz $proto_name. Zezwól tylko TLS 1.2+ (preferuj TLS 1.3)."
-                    break  # jedno ostrzeżenie per host:port wystarczy
+                    add_finding $i "HIGH" "TLS_WEAK_CIPHER"                         "Obsolete protocol $proto_name accepted on $ip:$tport"                         "Disable $proto_name. Allow only TLS 1.2+ (prefer TLS 1.3)."
+                    break
                 fi
             done
 
-            # Cipher suite — sprawdź RC4/DES/3DES/NULL
             local weak_ciphers
             weak_ciphers=$(timeout 4 bash -c "
                 echo | ${T[openssl]} s_client                     -connect '${ip}:${tport}'                     -cipher 'RC4:DES:3DES:NULL:aNULL:eNULL' 2>&1" 2>/dev/null |                 grep "Cipher\s*:" | awk '{print $NF}' || echo "")
             if [[ -n "$weak_ciphers" && "$weak_ciphers" != "(NONE)" ]]; then
-                add_finding $i "HIGH" "TLS_WEAK_CIPHER"                     "Słaby cipher suite na $ip:$tport: $weak_ciphers"                     "Ogranicz do: TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256, ECDHE+AESGCM."
+                add_finding $i "HIGH" "TLS_WEAK_CIPHER"                     "Weak cipher suite on $ip:$tport: $weak_ciphers"                     "Restrict to: TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256, ECDHE+AESGCM."
             fi
 
-            # SAN / hostname mismatch
             local san_list
             san_list=$(echo "$cert_pem" |                 ${T[openssl]} x509 -noout -text 2>/dev/null |                 grep -oP '(?<=DNS:)[^,\s]+' | tr '
 ' ',' | sed 's/,$//' || echo "")
             if [[ -n "$san_list" ]]; then
                 add_verified $i "TLS_SAN" "$ip:$tport SAN=$san_list"
-                # Sprawdź czy IP jest w SAN lub CN
                 if ! echo "$san_list,$sub_cn" | grep -q "$ip" &&                    ! echo "$san_list" | grep -q "^*\."; then
-                    add_finding $i "MEDIUM" "TLS_SAN_MISMATCH"                         "IP $ip nie pasuje do SAN certyfikatu na :$tport (SAN: ${san_list:0:60})"                         "Wygeneruj certyfikat z IP SAN lub poprawnym CN. openssl req -addext 'subjectAltName=IP:$ip'"
+                    add_finding $i "MEDIUM" "TLS_SAN_MISMATCH"                         "IP $ip does not match certificate SAN on :$tport (SAN: ${san_list:0:60})"                         "Generate certificate with IP SAN or correct CN. openssl req -addext 'subjectAltName=IP:$ip'"
                 fi
             fi
 
         done
     done
-    log "[TLS] TLS audit zakończony" "OK"
+    log "[TLS] TLS audit complete" "OK"
 }
 
-
 audit_egress() {
+    [[ "$MODE" == "passive" ]] && return 0
+    if [[ "$MODE" == "passive" ]]; then
+        log "[EGRESS] Skipped (passive mode)" "INFO"
+        return 0
+    fi
     log "$(L phase_9)" "SECTION"
     local http_code="000" https_code="000"
     if [[ -n "${T[curl]:-}" ]]; then
@@ -5208,18 +4039,20 @@ audit_egress() {
     fi
 }
 
-
-# [10] WAN EXPOSURE
-
 declare -A WAN_AUDIT=([scanned]="0" [open_ports]="" [rdp_exposed]="0" [ssh_exposed]="0" [admin_exposed]="0")
 
 audit_wan() {
+    [[ "$MODE" == "passive" ]] && return 0
+    if [[ "$MODE" == "passive" ]]; then
+        log "[WAN] Skipped (passive mode)" "INFO"
+        return 0
+    fi
     if [[ $SKIP_WAN -eq 1 || -z "$WAN_IP" ]]; then
         log "$(L wan_skip_vpn)" "WARN"
         if [[ "${TOPO[vpn_detected]:-0}" == "1" ]]; then
             add_net_finding "INFO" "WAN" \
-                "Test WAN pominięty — wykryto VPN (${TOPO[vpn_type]:-unknown}). WAN IP ${WAN_IP:-nieznany} należy do VPN providera, nie do lokalnego routera." \
-                "Dla testu WAN lokalnego routera uruchom audyt bez połączenia VPN lub podaj --wan <PRAWDZIWY_WAN_IP>."
+                "WAN test skipped — VPN detected (${TOPO[vpn_type]:-unknown}). WAN IP ${WAN_IP:-unknown} belongs to VPN provider, not local router." \
+                "For local router WAN test, run audit without VPN or provide --wan <REAL_WAN_IP>."
         fi
         return
     fi
@@ -5237,46 +4070,37 @@ audit_wan() {
             case $port in
             22) WAN_AUDIT[ssh_exposed]="1"
                 add_net_finding "HIGH" "WAN_EKSPOZYCJA" \
-                    "SSH port 22 dostępny pod $WAN_IP z internetu" \
-                    "Wymuś klucze SSH. Zmień port. Wdróż automatyczne blokowanie prób logowania. Ogranicz dostęp do VPN." ;;
+                    "SSH port 22 accessible at $WAN_IP from internet" \
+                    "Enforce SSH keys. Change port. Deploy automatic login attempt blocking. Restrict access to VPN." ;;
             80) WAN_AUDIT[admin_exposed]="1"
                 add_net_finding "HIGH" "WAN_EKSPOZYCJA" \
-                    "HTTP port 80 dostępny pod $WAN_IP – panel bez szyfrowania" \
-                    "Ogranicz dostęp. Wymuś HTTPS." ;;
+                    "HTTP port 80 accessible at $WAN_IP — unencrypted panel" \
+                    "Restrict access. Enforce HTTPS." ;;
             443|8443) add_net_finding "MEDIUM" "WAN_EKSPOZYCJA" \
-                    "HTTPS port $port dostępny pod $WAN_IP" \
-                    "Weryfikuj czy zamierzone. Sprawdź certyfikat." ;;
+                    "HTTPS port $port accessible at $WAN_IP" \
+                    "Verify if intentional. Check certificate." ;;
             8080) WAN_AUDIT[admin_exposed]="1"
                 add_net_finding "HIGH" "WAN_EKSPOZYCJA" \
-                    "HTTP port 8080 dostępny pod $WAN_IP" \
-                    "Zablokuj z WAN. Dostęp tylko przez VPN." ;;
+                    "HTTP port 8080 accessible at $WAN_IP" \
+                    "Block from WAN. Access via VPN only." ;;
             3389) WAN_AUDIT[rdp_exposed]="1"
                 add_net_finding "CRITICAL" "WAN_EKSPOZYCJA" \
-                    "RDP port 3389 dostępny z INTERNETU pod $WAN_IP – cel ransomware" \
-                    "NATYCHMIAST zablokuj. Dostęp przez VPN. NLA+MFA." ;;
+                    "RDP port 3389 reachable from the Internet at $WAN_IP — ransomware target" \
+                    "Block immediately. Allow access via VPN only. Enforce NLA and MFA." ;;
             445) add_net_finding "CRITICAL" "WAN_EKSPOZYCJA" \
-                    "SMB port 445 z INTERNETU – wektor EternalBlue/WannaCry" \
-                    "NATYCHMIAST zablokuj na WAN." ;;
+                    "SMB port 445 reachable from the Internet — EternalBlue/WannaCry exposure vector" \
+                    "Block immediately at the WAN boundary." ;;
             esac
         fi
     done
     echo ""
     WAN_AUDIT[open_ports]="${open_wan# }"
-    [[ -z "${open_wan# }" ]] && add_net_finding "INFO" "WAN" "Brak otwartych portów pod $WAN_IP ✓" ""
+    [[ -z "${open_wan# }" ]] && add_net_finding "INFO" "WAN" "No open ports at $WAN_IP ✓" ""
 }
-
-# [11] LATERAL MOVEMENT
 
 FLAT_PERCENT="0"
 declare -a LATERAL_PATHS=()
 
-# [10a] ACTIVE DIRECTORY / KERBEROS DETECTION
-# Wykrywa infrastrukturę AD bez bruteforce — pasywny fingerprint + safe probes:
-#   - LDAP/389 i LDAPS/636 — DC fingerprint, naming context
-#   - Kerberos/88 — AS-REQ probe (service ticket request bez credentiali)
-#   - SMB signing — brak = NTLM relay vector
-#   - MS-RPC/135 — DCE endpoint mapper
-#   - Global Catalog/3268, 3269
 declare -A AD_INFO=(
     [detected]="0"
     [dc_ip]=""
@@ -5301,11 +4125,9 @@ audit_ad() {
 
         local is_dc=0
 
-        # Kerberos/88 — AS-REQ probe
-        # Wysyłamy minimalny AS-REQ bez pre-auth — DC odpowie KRB_ERROR (nie exploitujemy)
         if contains_port "$ports" 88; then
             local krb_resp
-            krb_resp=$(timeout 3 bash -c                 "exec 3<>/dev/tcp/$ip/88 &&                  printf '   [jY0W¡¢
+            krb_resp=$(timeout 3 bash -c                 "exec 3<>/dev/tcp/$ip/88 &&                  printf '\x00\x00\x00[jY0W¡¢
 ' >&3 &&                  dd bs=4 count=1 <&3 2>/dev/null" 2>/dev/null | awk '{print $1+0}' || echo "0")
             if (( ${krb_resp:-0} >= 4 )); then
                 is_dc=1
@@ -5313,15 +4135,13 @@ audit_ad() {
                 AD_INFO[dc_ip]="$ip"
                 AD_INFO[detected]="1"
                 add_verified $i "KERBEROS_DC" "Kerberos/88 @ $ip — Domain Controller fingerprint"
-                log "  [AD] DC wykryty: $ip (Kerberos/88 aktywny)" "OK"
+                log "  [AD] DC detected: $ip (Kerberos/88 active)" "OK"
             fi
         fi
 
-        # LDAP/389 — anonymous bind (enumeracja bez credentiali)
         if contains_port "$ports" 389; then
             local ldap_resp=""
             if [[ -n "${T[ldapsearch]:-}" ]]; then
-                # ldapsearch anonymous — rootDSE (nie wymaga auth)
                 ldap_resp=$(timeout 5 ${T[ldapsearch]} -x -H "ldap://$ip"                     -b "" -s base "(objectclass=*)"                     defaultNamingContext dnsHostName domainFunctionality                     2>/dev/null | head -20 || echo "")
                 if [[ -n "$ldap_resp" ]] && echo "$ldap_resp" | grep -qi "namingContext\|dn:\|DC="; then
                     is_dc=1
@@ -5330,11 +4150,9 @@ audit_ad() {
                     local domain_nc; domain_nc=$(echo "$ldap_resp" |                         grep -i "defaultNamingContext" | head -1 |                         grep -oP 'DC=[^,]+' | tr ',' '.' | sed 's/DC=//g' || echo "")
                     [[ -n "$domain_nc" ]] && AD_INFO[domain]="$domain_nc"
                     add_verified $i "LDAP_DC" "LDAP DC @ $ip domain=${domain_nc:-unknown}"
-                    # Anonymous bind = informacja o domenie bez auth
-                    add_finding $i "MEDIUM" "AD_LDAP_OPEN"                         "LDAP anonymous bind dozwolony na $ip:389 — domain info: ${domain_nc:-?}"                         "Wyłącz anonymous LDAP bind. Wymuś LDAP signing: [Domain controller: LDAP signing = Require signing]"
+                    add_finding $i "MEDIUM" "AD_LDAP_OPEN"                         "LDAP anonymous bind dozwolony on $ip:389 — domain info: ${domain_nc:-?}"                         "Disable anonymous LDAP bind. Enforce LDAP signing: [Domain controller: LDAP signing = Require signing]"
                 fi
             else
-                # Bez ldapsearch — raw TCP probe
                 ldap_resp=$(timeout 2 bash -c "exec 3<>/dev/tcp/$ip/389" 2>/dev/null && echo 1 || echo 0)
                 if (( ${ldap_resp:-0} > 4 )); then
                     is_dc=1; AD_INFO[detected]="1"; AD_INFO[dc_ip]="$ip"
@@ -5343,7 +4161,6 @@ audit_ad() {
             fi
         fi
 
-        # LDAPS/636 — sprawdź certyfikat (często self-signed w AD)
         if contains_port "$ports" 636 && [[ -n "${T[openssl]:-}" ]]; then
             local ldaps_cert
             ldaps_cert=$(timeout 5 bash -c                 "echo | ${T[openssl]} s_client -connect '${ip}:636' -showcerts 2>/dev/null"                 2>/dev/null | head -5 || echo "")
@@ -5353,7 +4170,6 @@ audit_ad() {
             fi
         fi
 
-        # SMB Signing check — krytyczne dla NTLM relay
         if contains_port "$ports" 445; then
             local smb_sign="unknown"
             if [[ -n "${T[smbclient]:-}" ]]; then
@@ -5363,10 +4179,9 @@ audit_ad() {
                     add_verified $i "SMB_SIGNING_REQUIRED" "SMB signing mandatory @ $ip"
                 elif echo "$smb_neg" | grep -qi "signing.*disabled\|not required\|disabled"; then
                     smb_sign="disabled"
-                    add_finding $i "HIGH" "AD_NO_SIGNING"                         "SMB signing WYŁĄCZONE na $ip — podatność na NTLM relay attack (pass-the-hash, lateral movement)"                         "Włącz: [MS network server: Digitally sign comms = Enabled] w GPO. Responder/ntlmrelayx bez SMB signing = lateral movement całej sieci."
+                    add_finding $i "HIGH" "AD_NO_SIGNING"                         "SMB signing DISABLED on $ip — vulnerable to NTLM relay attack (pass-the-hash, lateral movement)"                         "Enable: [MS network server: Digitally sign comms = Enabled] in GPO. Responder/ntlmrelayx without SMB signing = lateral movement across entire network."
                 fi
             else
-                # Raw SMB negotiate — sprawdź bit SecurityMode w negotiate response
                 local smb_raw
                 smb_raw=$(timeout 2 bash -c "exec 3<>/dev/tcp/$ip/445" 2>/dev/null && echo "1" || echo "0")
                 if (( ${smb_raw:-0} > 30 )); then
@@ -5376,27 +4191,23 @@ audit_ad() {
             AD_INFO[smb_signing]="$smb_sign"
         fi
 
-        # MS-RPC / DCE Endpoint Mapper/135 — obecność = Windows host
         if contains_port "$ports" 135; then
             add_verified $i "MSRPC_EPMAP" "MS-RPC Endpoint Mapper @ $ip:135"
         fi
 
-        # Global Catalog/3268 — tylko DC mają GC
         if contains_port "$ports" 3268 || contains_port "$ports" 3269; then
             is_dc=1; AD_INFO[detected]="1"; AD_INFO[dc_ip]="$ip"
             add_verified $i "AD_GLOBAL_CATALOG" "Global Catalog @ $ip:3268 — Domain Controller"
-            log "  [AD] Global Catalog wykryty na $ip" "OK"
+            log "  [AD] Global Catalog detected on $ip" "OK"
         fi
 
-        # Kerberoasting probe — sprawdź czy SPN są enumerowalne (bez auth)
         if (( is_dc == 1 )) && [[ -n "${T[ldapsearch]:-}" ]]; then
             local spn_count; spn_count=$(timeout 5 ${T[ldapsearch]} -x                 -H "ldap://$ip" -b "${AD_INFO[domain]:+DC=${AD_INFO[domain]//./,DC=}}"                 "(&(objectCategory=user)(servicePrincipalName=*))" dn                 2>/dev/null | grep -c "^dn:" || echo "0")
             if (( ${spn_count:-0} > 0 )); then
-                add_finding $i "HIGH" "KERBEROASTING"                     "${spn_count} kont z SPN wykrytych na $ip — podatne na Kerberoasting (offline crack TGS tickets)"                     "Użyj gMSA dla service accounts. Silne hasła (25+ znaków). Monitoruj TGS requests w SIEM."
+                add_finding $i "HIGH" "KERBEROASTING"                     "${spn_count} accounts with SPN detected on $ip — vulnerable to Kerberoasting (offline crack TGS tickets)"                     "Użyj gMSA for service accounts. Silne hasła (25+ znaków). Monitoruj TGS requests w SIEM."
             fi
         fi
 
-        # Podsumowanie DC
         if (( is_dc == 1 )); then
             SECURITY_SYSTEMS+=("Active Directory DC @ $ip domain=${AD_INFO[domain]:-unknown}")
         fi
@@ -5406,7 +4217,7 @@ audit_ad() {
         log "  [AD] Środowisko AD wykryte. DC=${AD_INFO[dc_ip]} domain=${AD_INFO[domain]:-unknown}" "OK"
         log "  [AD] SMB signing=${AD_INFO[smb_signing]} Kerberos=${AD_INFO[kerberos_open]}" "OK"
     else
-        log "  [AD] Brak wskaźników Active Directory w sieci" "OK"
+        log "  [AD] No Active Directory indicators detected on network" "OK"
     fi
 }
 
@@ -5415,13 +4226,8 @@ audit_lateral() {
     (( DEV_COUNT < 2 )) && return
 
     local total=0 hits=0 tested=0 reachable=0
-    # Lateral movement audit — dwa poziomy:
-    # L1: Port presence (szybki — z zebranych danych port scan)
-    # L2: Actual TCP reachability (wolniejszy — rzeczywista próba połączenia)
-    # Cel: zmierzyć czy firewall/ACL faktycznie blokuje ruch east-west
     local lat_ports="445 22 3389 5985 5986 3306 1433 5432 6379 27017"
 
-    # L1: Port presence — które hosty mają potencjalnie exploitowalne porty
     declare -A host_risk=()
     for (( j=0; j<DEV_COUNT; j++ )); do
         local risk_ports=0
@@ -5431,8 +4237,6 @@ audit_lateral() {
         host_risk["${D_IP[$j]}"]="$risk_ports"
     done
 
-    # L2: Actual reachability test — czy możemy dotrzeć z audytora do każdego hosta:port
-    # (audytor = proxy dla "dowolnego skompromitowanego hosta w sieci")
     declare -a REACH_MATRIX=()   # "src_ip→dst_ip:port=OPEN|FILTERED"
     local active_probes=0
 
@@ -5444,7 +4248,6 @@ audit_lateral() {
             contains_port "${D_PORTS[$j]}" "$lport" || continue
             (( total++ ))
 
-            # Sprawdź faktyczną osiągalność (nie zakładaj z port scan)
             (
                 if timeout 1.2 bash -c "exec 3<>/dev/tcp/$dst/$lport" 2>/dev/null; then
                     echo "OPEN"
@@ -5458,7 +4261,6 @@ audit_lateral() {
     done
     wait
 
-    # Zbierz wyniki
     for (( j=0; j<DEV_COUNT; j++ )); do
         local dst="${D_IP[$j]}"
         for lport in $lat_ports; do
@@ -5470,17 +4272,15 @@ audit_lateral() {
             if [[ "$result" == "OPEN" ]]; then
                 (( hits++ )); (( reachable++ ))
                 RAW_LATERAL["→${dst}:${lport}"]=1
-                # Znajdź krytyczne kombinacje
                 case "$lport" in
                     445) # SMB — highest lateral movement risk
-                        # Sprawdź czy SMB signing jest wymagany
                         if [[ "${AD_INFO[smb_signing]:-unknown}" != "required" ]]; then
-                            add_net_finding "CRITICAL" "LATERAL_MOVEMENT"                                 "SMB $dst:445 osiągalny bez SMB signing — NTLM relay / pass-the-hash trivial"                                 "Wymuś SMB signing w GPO. Segmentuj stacje robocze w osobnym VLAN."
+                            add_net_finding "CRITICAL" "LATERAL_MOVEMENT"                                 "SMB $dst:445 reachable without SMB signing — NTLM relay / pass-the-hash trivial"                                 "Enforce SMB signing via GPO. Segment workstations in separate VLAN."
                         fi ;;
-                    3389) add_net_finding "HIGH" "LATERAL_MOVEMENT"                               "RDP $dst:3389 dostępny z sieci — lateral movement / BlueKeep scope"                               "Ogranicz RDP do Jump Server / VPN. Wymuś NLA (Network Level Auth)." ;;
-                    5985|5986) add_net_finding "HIGH" "LATERAL_MOVEMENT"                               "WinRM $dst:$lport osiągalny — PowerShell remoting lateral movement"                               "Ogranicz WinRM do management VLAN. Wymuś kerberos auth." ;;
-                    3306|1433|5432) add_net_finding "HIGH" "LATERAL_MOVEMENT"                               "DB $dst:$lport (port: $lport) osiągalny — data exfiltration path"                               "Ogranicz dostęp DB do application server VLAN. Użyj firewall ACL." ;;
-                    6379|27017) add_net_finding "CRITICAL" "LATERAL_MOVEMENT"                               "NoSQL $dst:$lport osiągalny — często brak auth (Redis/MongoDB)"                               "Ogranicz do localhost/app VLAN. Wymuś auth." ;;
+                    3389) add_net_finding "HIGH" "LATERAL_MOVEMENT"                               "RDP $dst:3389 accessible from network — lateral movement / BlueKeep scope"                               "Restrict RDP to Jump Server / VPN. Enforce NLA (Network Level Auth)." ;;
+                    5985|5986) add_net_finding "HIGH" "LATERAL_MOVEMENT"                               "WinRM $dst:$lport reachable — PowerShell remoting lateral movement"                               "Restrict WinRM to management VLAN. Enforce Kerberos auth." ;;
+                    3306|1433|5432) add_net_finding "HIGH" "LATERAL_MOVEMENT"                               "DB $dst:$lport (port: $lport) reachable — data exfiltration path"                               "Restrict DB access to application server VLAN. Use firewall ACL." ;;
+                    6379|27017) add_net_finding "CRITICAL" "LATERAL_MOVEMENT"                               "NoSQL $dst:$lport reachable — often no auth (Redis/MongoDB)"                               "Restrict to localhost/app VLAN. Enforce auth." ;;
                 esac
             fi
         done
@@ -5494,30 +4294,20 @@ audit_lateral() {
     log "  Lateral: tested=$tested reachable=$reachable (${FLAT_PERCENT:-0}%)"
     log "  Lateral paths: ${LATERAL_PATHS[*]:-none}"
 
-    # Wynik ogólny
     if (( flat_int > 50 )); then
-        add_net_finding "CRITICAL" "LATERAL_MOVEMENT"             "Flat network: ${FLAT_PERCENT}% portów lateral-movement osiągalnych (${reachable}/${tested}) — zero segmentacji"             "Krytyczna architektura: wdróż VLAN segmentację, Zero Trust east-west policy, microsegmentation."
+        add_net_finding "CRITICAL" "LATERAL_MOVEMENT"             "Flat network: ${FLAT_PERCENT}% lateral-movement ports reachable (${reachable}/${tested}) — zero segmentation"             "Krytyczna architektura: wdróż VLAN segmentację, Zero Trust east-west policy, microsegmentation."
     elif (( flat_int > 25 )); then
-        add_net_finding "HIGH" "LATERAL_MOVEMENT"             "Partial segmentation: ${FLAT_PERCENT}% portów osiągalnych (${reachable}/${tested})"             "Wzmocnij segmentację. Dodaj east-west firewall / NGFWrules między segmentami."
+        add_net_finding "HIGH" "LATERAL_MOVEMENT"             "Partial segmentation: ${FLAT_PERCENT}% ports reachable (${reachable}/${tested})"             "Strengthen segmentation. Add east-west firewall / NGFW rules between segments."
     elif (( flat_int > 0 )); then
-        add_net_finding "MEDIUM" "LATERAL_MOVEMENT"             "Ograniczone ścieżki lateral: ${FLAT_PERCENT}% (${reachable}/${tested})"             "Przegląd ACL. Zastosuj least-privilege network access."
+        add_net_finding "MEDIUM" "LATERAL_MOVEMENT"             "Limited lateral paths: ${FLAT_PERCENT}% (${reachable}/${tested})"             "Review ACLs. Apply least-privilege network access."
     else
-        log "  [✓] Lateral movement: brak osiągalnych ścieżek — dobra segmentacja" "OK"
+        log "  [✓] Lateral movement: no reachable paths — good segmentation" "OK"
     fi
 }
 
-# [12] FIREWALL AUDIT
-
 declare -A FW_AUDIT=([host_firewall_detected]="0" [default_policy]="unknown" [egress_filtered]="0")
 
-
-
-# Early stub: allows pre-definition checkpoints before the full implementation is parsed later.
-write_model_snapshot() { :; }
-
-# CHECKPOINT: snapshot model state after Phase 4–11 commit
 write_model_snapshot
-
 
 audit_firewall() {
     log "$(L phase_12)" "SECTION"
@@ -5528,17 +4318,11 @@ audit_firewall() {
     fi
 }
 
-
-
-# [13] FLEET OPEN DEVICE MANAGEMENT
-
-# Stałe instalacyjne Fleet
 readonly FLEET_VERSION_REQUIRED="4.50.0"
 readonly FLEETCTL_URL="https://github.com/fleetdm/fleet/releases/download/fleet-v${FLEET_VERSION_REQUIRED}/fleetctl_v${FLEET_VERSION_REQUIRED}_linux.tar.gz"
 readonly FLEET_PORTS="8080 8443"
 readonly OSQUERY_PORTS="9000"
 
-# Wyniki Fleet — uzupełniane przez audit_placeholder_local()
 declare -A FLEET_RESULT=(
     [status]="not_checked"
     [local_fleetctl]="0"
@@ -5554,13 +4338,10 @@ declare -A FLEET_RESULT=(
     [api_reachable]="0"
 )
 
-
 _fleet_try_install() {
-    log "  [Fleet] v28: auto-install wyłączony w core target-centric" "WARN"
+    log "  [Fleet] v28: auto-install disabled in core target-centric" "WARN"
     return 1
 }
-
-
 
 _fleet_check_api() {
     local ip="$1" port="$2"
@@ -5578,9 +4359,6 @@ _fleet_check_api() {
 audit_placeholder_local() {
     return 0
 }
-
-
-# [14] PROWLER AWS SECURITY AUDIT
 
 readonly PROWLER_MIN_PYTHON="3.9"
 readonly PROWLER_RESULTS_DIR_NAME="prowler"
@@ -5615,32 +4393,26 @@ _prowler_check_python() {
     echo "$python_bin"
 }
 
-
 _prowler_try_install() {
-    log "  [Prowler] v28: auto-install wyłączony w core target-centric" "WARN"
+    log "  [Prowler] v28: auto-install disabled in core target-centric" "WARN"
     return 1
 }
 
-
-
 _prowler_detect_aws() {
-    log "  [Prowler] Wykrywanie AWS credentials..." "DEBUG"
+    log "  [Prowler] Detecting AWS credentials..." "DEBUG"
 
-    # 1) Zmienne środowiskowe
     if [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
         PROWLER_RESULT[aws_detected]="1"
         log "  [Prowler] AWS credentials w ENV" "OK"
         return 0
     fi
 
-    # 2) Plik credentials
     if [[ -f "$HOME/.aws/credentials" ]] && grep -q "aws_access_key_id" "$HOME/.aws/credentials" 2>/dev/null; then
         PROWLER_RESULT[aws_detected]="1"
         log "  [Prowler] AWS credentials w ~/.aws/credentials" "OK"
         return 0
     fi
 
-    # 3) AWS CLI STS — zweryfikuj że credentials działają
     if command -v aws &>/dev/null; then
         local sts_resp; sts_resp=$(timeout 8 aws sts get-caller-identity 2>/dev/null || echo "")
         if [[ -n "$sts_resp" ]]; then
@@ -5654,7 +4426,6 @@ _prowler_detect_aws() {
         fi
     fi
 
-    # 4) EC2 Instance Metadata (jeśli uruchomiony na EC2)
     if [[ -n "${T[curl]:-}" ]]; then
         local imds; imds=$(curl -s --max-time 2 "http://169.254.169.254/latest/meta-data/instance-id" 2>/dev/null || echo "")
         if [[ -n "$imds" && "$imds" =~ ^i- ]]; then
@@ -5672,12 +4443,8 @@ audit_placeholder_cloud() {
     return 0
 }
 
-
-# [16] SCORING
-
 declare -A SEV_POINTS=([CRITICAL]=35 [HIGH]=20 [MEDIUM]=10 [LOW]=3 [INFO]=0)
 
-# Waga asset impact per rola (enterprise weighting)
 get_asset_impact() {
     local role="$1"
     case "$role" in
@@ -5688,7 +4455,7 @@ get_asset_impact() {
         *Windows*|*RDP*)         echo "13" ;;  # x1.3 — lateral target
         *WinRM*|*SMB*)           echo "13" ;;
         *VNC*)                   echo "12" ;;
-        *IoT*|*Telnet*|*LEGACY*) echo "14" ;;  # x1.4 — słaba ochrona
+        *IoT*|*Telnet*|*LEGACY*) echo "14" ;;  # x1.4 — weak protection
         *)                       echo "10" ;;  # x1.0 — baseline
     esac
 }
@@ -5715,12 +4482,10 @@ score_host() {
     (( raw > 100 )) && raw=100
     D_RAW_SCORE[$idx]=$raw
 
-    # Asset Impact Weighting (rola hosta w sieci)
     local impact; impact=$(get_asset_impact "${D_ROLE[$idx]:-}")
     local weighted_raw=$(( raw * impact / 10 ))
     (( weighted_raw > 100 )) && weighted_raw=100
 
-    # Exposure weighting — czy host jest gateway/DMZ/CORE
     local exposure=10
     case "${D_SEGMENT[$idx]:-}" in
         GATEWAY)    exposure=17 ;;
@@ -5734,7 +4499,6 @@ score_host() {
     local exposed_raw=$(( weighted_raw * exposure / 10 ))
     (( exposed_raw > 100 )) && exposed_raw=100
 
-    # Mitigation discount
     local mitigation_discount=0
     if [[ -n "${D_VERIFIED[$idx]:-}" ]]; then
         local IFS_OLD="$IFS"
@@ -5752,7 +4516,6 @@ score_host() {
         done
     fi
 
-    # RISK = (Asset_Impact × Exposure × Raw) / 100 − Mitigation
     local residual=$(( exposed_raw - mitigation_discount ))
     (( residual < 0 )) && residual=0
     D_RESIDUAL_SCORE[$idx]=$residual
@@ -5785,35 +4548,29 @@ score_network() {
 GLOBAL_SCORE="0"
 OVERALL_GRADE=""
 H_CRITICAL=0 H_HIGH=0 H_MEDIUM=0 H_LOW=0
-THREAT_SCORE_FORMAL=0  # Σ(weight_i × present_i × confidence_i/100), normalizowany 0-100
-DEFENSE_SCORE=0        # Ocena aktywnej obrony sieci (0-100)
-DEFENSE_LEVEL="Low"    # Low / Medium / High / Advanced
-DEFENSE_SUMMARY=""     # Jednozdaniowe podsumowanie dla executive report
+THREAT_SCORE_FORMAL=0
+DEFENSE_SCORE=0
+DEFENSE_LEVEL="Low"
+DEFENSE_SUMMARY=""
 
 build_attack_path() {
-    # Buduje narrację kill chain na podstawie zebranych danych
-    # Bez hardcodowania — opiera się na tym co faktycznie wykryto
     declare -gA ATTACK_PATH=()
     local steps=0
 
-    # Krok 1: Initial Access vectors
     local initial_access=""
     for (( i=0; i<DEV_COUNT; i++ )); do
         local findings="${D_FINDINGS[$i]:-}"
         [[ -z "$findings" ]] && continue
-        # Szukaj portów które dają initial access z internetu
         local ports="${D_PORTS[$i]}"
         contains_port "$ports" 3389 && initial_access="${initial_access}RDP@${D_IP[$i]} "
         contains_port "$ports" 22   && initial_access="${initial_access}SSH@${D_IP[$i]} "
         contains_port "$ports" 80   && initial_access="${initial_access}HTTP@${D_IP[$i]} "
         contains_port "$ports" 443  && initial_access="${initial_access}HTTPS@${D_IP[$i]} "
-        # Docker/K8s = immediate critical initial access
         echo "$findings" | grep -q "CONTAINER_ESCAPE\|K8S_UNAUTHENTICATED\|ETCD_OPEN" &&             initial_access="${initial_access}CONTAINER@${D_IP[$i]}[CRITICAL] "
     done
     ATTACK_PATH[step_1_initial_access]="${initial_access:-none detected}"
     (( steps++ ))
 
-    # Krok 2: Execution / Credential Access
     local exec_vectors=""
     for (( i=0; i<DEV_COUNT; i++ )); do
         local findings="${D_FINDINGS[$i]:-}"
@@ -5821,12 +4578,11 @@ build_attack_path() {
         echo "$findings" | grep -q "KERBEROASTING"  && exec_vectors="${exec_vectors}Kerberoasting@${D_IP[$i]} "
         echo "$findings" | grep -q "SNMP_OPEN"       && exec_vectors="${exec_vectors}SNMP_recon@${D_IP[$i]} "
         echo "$findings" | grep -q "AD_LDAP_OPEN"    && exec_vectors="${exec_vectors}LDAP_enum@${D_IP[$i]} "
-        echo "$findings" | grep -q "KRADZIEŻ_DANYCH\|KRADZIEŻ_HASEŁ" &&             exec_vectors="${exec_vectors}DataAccess@${D_IP[$i]} "
+        echo "$findings" | grep -q "DATA_THEFT\|CREDENTIAL_THEFT" &&             exec_vectors="${exec_vectors}DataAccess@${D_IP[$i]} "
     done
     [[ -n "$exec_vectors" ]] && ATTACK_PATH[step_2_exec]="$exec_vectors" ||         ATTACK_PATH[step_2_exec]="none detected"
     (( steps++ ))
 
-    # Krok 3: Lateral Movement paths
     if (( ${#LATERAL_PATHS[@]} > 0 )); then
         ATTACK_PATH[step_3_lateral]="${LATERAL_PATHS[*]}"
     else
@@ -5834,7 +4590,6 @@ build_attack_path() {
     fi
     (( steps++ ))
 
-    # Krok 4: Privilege Escalation indicators
     local privesc=""
     [[ "${AD_INFO[detected]:-0}" == "1" ]] &&         [[ "${AD_INFO[smb_signing]:-unknown}" != "required" ]] &&         privesc="${privesc}NTLM_relay(DC=${AD_INFO[dc_ip]:-?}) "
     for (( i=0; i<DEV_COUNT; i++ )); do
@@ -5846,18 +4601,16 @@ build_attack_path() {
     ATTACK_PATH[step_4_privesc]="${privesc:-none detected}"
     (( steps++ ))
 
-    # Krok 5: Impact / Exfiltration
     local impact=""
     for (( i=0; i<DEV_COUNT; i++ )); do
         local findings="${D_FINDINGS[$i]:-}"
-        echo "$findings" | grep -q "KRADZIEŻ_DANYCH\|REDIS\|MONGO\|ELASTIC" &&             impact="${impact}DataExfil@${D_IP[$i]} "
+        echo "$findings" | grep -q "DATA_THEFT\|REDIS\|MONGO\|ELASTIC" &&             impact="${impact}DataExfil@${D_IP[$i]} "
         echo "$findings" | grep -q "TLS_WEAK\|TLS_EXPIRED\|TLS_SELF_SIGNED" &&             impact="${impact}MITM_decryption@${D_IP[$i]} "
     done
     [[ "${EGRESS[http_out]:-0}" == "1" ]] && impact="${impact}HTTP_exfil_channel "
     ATTACK_PATH[step_5_impact]="${impact:-none detected}"
     (( steps++ ))
 
-    # Composite risk — czy istnieje kompletna kill chain?
     local chain_complete=0
     [[ "${ATTACK_PATH[step_1_initial_access]}" != "none detected" ]] &&     [[ "${ATTACK_PATH[step_3_lateral]}" != "none — good segmentation" ]] &&         (( chain_complete++ ))
     [[ "${ATTACK_PATH[step_4_privesc]}" != "none detected" ]] && (( chain_complete++ ))
@@ -5865,16 +4618,13 @@ build_attack_path() {
     ATTACK_PATH[steps_total]="$steps"
 }
 
-# Generuje remediation roadmap w 3 horyzontach czasowych
-# Opiera się wyłącznie na tym co wykryto — bez hardcodowania
 build_remediation_roadmap() {
     declare -gA ROADMAP_QUICK=()    # 0-7 dni: quick wins / natychmiastowe
     declare -gA ROADMAP_SHORT=()    # 1-4 tygodnie
-    declare -gA ROADMAP_STRATEGIC=() # 3-6 miesięcy
+    declare -gA ROADMAP_STRATEGIC=() # 3-6 months
 
     local quick_n=0 short_n=0 strat_n=0
 
-    # Skan wszystkich findings i klasyfikuj wg CVSS + typ
     for (( i=0; i<DEV_COUNT; i++ )); do
         local ip="${D_IP[$i]}"
         local raw="${D_FINDINGS[$i]:-}"
@@ -5898,17 +4648,14 @@ build_remediation_roadmap() {
             [[ -z "$cvss" ]] && cvss=$(cvss_for_finding "$sev" "$cat")
             local cvss_int; cvss_int=$(echo "$cvss" | cut -d. -f1)
 
-            # Quick wins: CVSS >=9.0 ATAU bisa di-fix dengan satu perintah
             if (( ${cvss_int:-0} >= 9 )) ||                [[ "$cat" =~ CONTAINER_ESCAPE|ETCD_OPEN|K8S_UNAUTHENTICATED|TFTP_OPEN|POTENCJALNY_BACKDOOR ]]; then
                 ROADMAP_QUICK[$quick_n]="${ip}|${sev}|${cvss}|${cat}|${rec}"
                 (( quick_n++ ))
 
-            # Short-term: CVSS 7-8.9 lub wymagające konfiguracji
             elif (( ${cvss_int:-0} >= 7 )) ||                  [[ "$cat" =~ TLS_EXPIRED|TLS_WEAK|AD_NO_SIGNING|SNMP_OPEN|KERBEROASTING|LATERAL_MOVEMENT ]]; then
                 ROADMAP_SHORT[$short_n]="${ip}|${sev}|${cvss}|${cat}|${rec}"
                 (( short_n++ ))
 
-            # Strategic: wymagające architektury (VLAN, ZeroTrust, PKI)
             else
                 ROADMAP_STRATEGIC[$strat_n]="${ip}|${sev}|${cvss}|${cat}|${rec}"
                 (( strat_n++ ))
@@ -5917,7 +4664,6 @@ build_remediation_roadmap() {
         done
     done
 
-    # Net findings do roadmapy
     for finding in "${NET_FINDINGS[@]:-}"; do
         [[ -z "$finding" ]] && continue
         local IFS_OLD="$IFS"
@@ -5943,10 +4689,8 @@ build_remediation_roadmap() {
     ROADMAP_STRATEGIC[count]="$strat_n"
 }
 
-
 build_executive() {
 
-    # Maturity score — niezależny od findings (ocena pozytywna zabezpieczeń)
     local maturity=0
     [[ "${TRAFFIC_POLICY[http_egress_blocked]:-0}"   == "1" ]] && (( maturity += 10 ))
     [[ "${TRAFFIC_POLICY[dns_controlled]:-0}"        == "1" ]] && (( maturity += 10 ))
@@ -5981,13 +4725,8 @@ build_executive() {
     gs=$(( gs - net_pen ))
     (( gs < 0 )) && gs=0
 
-    # Formalny ThreatScore: Σ(weight_i × present_i × confidence_i / 100)
-    # Każda detekcja ma wagę i confidence.
-    # Suma normalizowana do 0-100 i odejmowana od gs.
     local ts=0 ts_max=0
-    # Format: weight confidence present(0|1)
     local -a ts_items=(
-        # waga  conf                                                          obecny
         "25     ${L3_RESULTS[silent_drop_conf]:-0}      ${L3_RESULTS[silent_drop_detected]:-0}"
         "20     ${L3_RESULTS[east_west_conf]:-0}        $([ "${L3_RESULTS[east_west_isolated]:-1}" = "0" ] && echo 1 || echo 0)"
         "15     ${TOPO[ids_conf]:-70}                   ${TOPO[ids_detected]:-0}"
@@ -6006,7 +4745,6 @@ build_executive() {
             ts=$(( ts + w * c_val / 100 ))
         fi
     done
-    # Normalizuj do 0-100 i zapisz
     local ts_normalized=0
     (( ts_max > 0 )) && ts_normalized=$(( ts * 100 / ts_max ))
     THREAT_SCORE_FORMAL="$ts_normalized"
@@ -6020,16 +4758,8 @@ build_executive() {
     else                      OVERALL_GRADE="F – Krytyczne zagrożenia, natychmiastowe działanie"
     fi
 
-    # ── DEFENSE POSTURE SCORE ────────────────────────────────────────────────
-    # Niezależny od GLOBAL_SCORE — mierzy ile aktywnych warstw obrony sieć posiada.
-    # Każda wykryta kontrola dodaje punkty; confidence skaluje wagę.
-    #
-    # Skala: 0-100 → Low / Medium / High / Advanced
-    # Cel: jeden czytelny wskaźnik dla executive summary.
-
     local ds=0
 
-    # Warstwa 1: Firewall (20 pkt)
     if [[ "${TOPO[firewall_type]:-}" == *"stateful"* ]]; then
         local fw_conf="${TOPO[firewall_drop_conf]:-50}"
         _is_int "$fw_conf" || fw_conf=50
@@ -6038,27 +4768,21 @@ build_executive() {
         (( ds += 8 ))
     fi
 
-    # Warstwa 2: IDS/Rate limiting (20 pkt)
     if [[ "${TOPO[ids_detected]:-0}" == "1" ]]; then
         local ids_conf="${TOPO[ids_conf]:-65}"
         _is_int "$ids_conf" || ids_conf=65
         (( ds += 20 * ids_conf / 100 ))
     fi
 
-    # Warstwa 3: DNS Filtering (15 pkt)
     [[ "${TOPO[dns_filter_detected]:-0}" == "1" ]] && (( ds += 15 ))
 
-    # Warstwa 4: L3 Segmentacja / East-West isolation (15 pkt)
     [[ "${L3_RESULTS[east_west_isolated]:-0}" == "1" ]] && (( ds += 15 ))
 
-    # Warstwa 5: Cross-subnet blokada (10 pkt)
     [[ "${L3_RESULTS[cross_subnet_ok]:-1}" == "0" ]] && (( ds += 10 ))
 
-    # Warstwa 6: Egress kontrola (10 pkt)
     [[ "${TRAFFIC_POLICY[http_egress_blocked]:-0}" == "1" ]] && (( ds += 5  ))
     [[ "${TRAFFIC_POLICY[dns_leak]:-0}"             == "0" ]] && (( ds += 5  ))
 
-    # Warstwa 7: Auto-ban / SSH tarpit (10 pkt — aktywna obrona, nie pasywna)
     [[ "${TOPO[autoban_detected]:-0}"     == "1" ]] && (( ds += 6 ))
     [[ "${TOPO[honeypot_detected]:-0}"    == "1" ]] && (( ds += 4 ))
 
@@ -6067,20 +4791,18 @@ build_executive() {
 
     if   (( ds >= 80 )); then
         DEFENSE_LEVEL="Advanced"
-        DEFENSE_SUMMARY="Sieć posiada wielowarstwową obronę aktywną (firewall stateful, IDS, filtrowanie DNS, segmentacja L3)."
+        DEFENSE_SUMMARY="Network has multi-layered active defence (stateful firewall, IDS, DNS filtering, L3 segmentation)."
     elif (( ds >= 55 )); then
         DEFENSE_LEVEL="High"
-        DEFENSE_SUMMARY="Silna obrona z co najmniej 3 aktywnymi warstwami; wymagane uzupełnienie brakujących kontroli."
+        DEFENSE_SUMMARY="Strong defence with at least 3 active layers; missing controls require attention."
     elif (( ds >= 30 )); then
         DEFENSE_LEVEL="Medium"
-        DEFENSE_SUMMARY="Podstawowa obrona obecna; brak kluczowych warstw (segmentacja lub IDS lub filtrowanie DNS)."
+        DEFENSE_SUMMARY="Basic defence present; missing key layers (segmentation or IDS or DNS filtering)."
     else
         DEFENSE_LEVEL="Low"
-        DEFENSE_SUMMARY="Minimalna lub brak aktywnej obrony — sieć podatna na lateral movement i eksfiltrację."
+        DEFENSE_SUMMARY="Minimal or no active defence — network vulnerable to lateral movement and exfiltration."
     fi
 }
-
-# [17] COMPLIANCE
 
 map_compliance() {
     local idx="$1"
@@ -6132,8 +4854,6 @@ get_compliance_matrix() {
     for c in $controls; do echo "${c}:${pass[$c]}:${warn[$c]}:${fail[$c]}"; done
 }
 
-# [18] JSON EXPORT
-
 json_esc() {
     local s="$1"
     s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
@@ -6168,17 +4888,13 @@ get_findings_json() {
     json+="]"; echo "$json"
 }
 
-
 write_model_snapshot() {
-    # Minimal checkpoint — can be used for diff-mode later
     [[ -z "${OUTPUT_PATH:-}" ]] && return 0
     local snap="$OUTPUT_PATH/model-snapshot.json"
-    # Reuse export_json output if already generated
     if [[ -s "${JSON_REPORT:-}" ]]; then
         cp -f "$JSON_REPORT" "$snap" 2>/dev/null || true
         return 0
     fi
-    # Otherwise: minimal snapshot, best-effort (safe under nounset)
     local _nounset_on=0
     case "$-" in *u*) _nounset_on=1 ;; esac
     set +u
@@ -6208,9 +4924,6 @@ write_model_snapshot() {
     } > "$snap" 2>/dev/null || true
     (( _nounset_on == 1 )) && set -u
 }
-
-
-
 
 export_json() {
     log "Generowanie JSON..."
@@ -6270,14 +4983,9 @@ EOF
     export_sarif || true
 }
 
-
-
-
-# [19] TERMINAL SUMMARY
-
 _finalize_no_evidence_report() {
     AUDIT_STATUS="${AUDIT_STATUS:-NO_EVIDENCE}"
-    [[ -z "${AUDIT_NOTE:-}" ]] && AUDIT_NOTE="Brak wystarczających dowodów do pełnego audytu aktywnego."
+    [[ -z "${AUDIT_NOTE:-}" ]] && AUDIT_NOTE="Insufficient evidence for full active audit."
     GLOBAL_SCORE=0
     OVERALL_GRADE="N/A"
     DEFENSE_SCORE=0
@@ -6294,257 +5002,19 @@ _finalize_no_evidence_report() {
     TRAFFIC_POLICY[rate_limiting]="UNKNOWN"
     NET_FINDINGS=()
     AUDIT_FINDINGS=()
-    add_net_finding "INFO" "AUDIT_SCOPE" "$AUDIT_NOTE" "Uruchom audyt z pozycji, która ma osiągalność do sieci korporacyjnych lub dostarcz seed scope niejawny przez orkiestrację."
+    add_net_finding "INFO" "AUDIT_SCOPE" "$AUDIT_NOTE" "Run audit from a position with reachability to corporate networks, or provide scope seed via orchestration."
 }
 
-print_summary() {
-    local gs="${GLOBAL_SCORE:-0}"
-    local grade="${OVERALL_GRADE:-?}"
-    local GC
-    local S_CC="${CC:-}" S_CN="${CN:-}" S_CBOLD="${CBOLD:-}" S_CW="${CW:-}" S_CD="${CD:-}" S_CO="${CO:-}" S_CG="${CG:-}" S_CR="${CR:-}"
-    if [[ "${NO_COLOR_SUMMARY:-1}" == "1" || ! -t 1 ]]; then
-        S_CC=""; S_CN=""; S_CBOLD=""; S_CW=""; S_CD=""; S_CO=""; S_CG=""; S_CR=""
-    fi
-    case "$grade" in
-        A*) GC="[1;32m" ;; B*) GC="[0;32m" ;;
-        C*) GC="[1;33m" ;; D*) GC="[0;33m" ;;
-        *)  GC="[1;31m" ;;
-    esac
-    # CW CC CD CM CG CR CN CBOLD are global readonly — used directly
-
-    local bar_len=40
-    local filled=$(( gs * bar_len / 100 ))
-    local empty=$(( bar_len - filled ))
-    local bar_f; bar_f=$(printf '█%.0s' $(seq 1 $filled 2>/dev/null) || printf '%0.s█' $(seq 1 $filled))
-    local bar_e; bar_e=$(printf '░%.0s' $(seq 1 $empty 2>/dev/null) || printf '%0.s░' $(seq 1 $empty))
-
-    echo ""
-    echo -e "  ${S_CC}╔══════════════════════════════════════════════════════════════╗${S_CN}"
-    printf   "  ${S_CC}║${S_CN}  ${S_CBOLD}%-60s${S_CC}║${S_CN}
-" "EWNAF v${VERSION} — Raport Audytu"
-    echo -e "  ${S_CC}╠══════════════════════════════════════════════════════════════╣${S_CN}"
-    echo -e "  ${S_CC}║${S_CN}  Klient : ${S_CW}${CLIENT_NAME}${S_CN}  Tryb: ${S_CW}${MODE}${S_CN}"
-    echo -e "  ${S_CC}║${S_CN}  Sieci  : ${S_CD}${SUBNETS[*]}${S_CN}"
-    echo -e "  ${S_CC}║${S_CN}  Hostów : ${S_CW}${DEV_COUNT}${S_CN}"
-    echo -e "  ${S_CC}╠══════════════════════════════════════════════════════════════╣${S_CN}"
-    if [[ "${AUDIT_STATUS:-READY}" != "READY" ]]; then
-        echo -e "  ${S_CO}Status : ${AUDIT_STATUS}${S_CN}"
-        [[ -n "${AUDIT_NOTE:-}" ]] && echo -e "  ${S_CO}Uwaga  : ${AUDIT_NOTE}${S_CN}"
-    fi
-    echo ""
-    echo -e "  ${S_CBOLD}OCENA KOŃCOWA SIECI${S_CN}"
-    printf  "  Score: ${GC}${S_CBOLD}%d/100${S_CN}   Ocena: ${GC}${S_CBOLD}%s${S_CN}
-" "$gs" "$grade"
-    echo -e "  ${GC}${S_CBOLD}${bar_f}${S_CN}${S_CD}${bar_e}${S_CN}"
-    echo ""
-    if [[ "${AUDIT_STATUS:-READY}" != "READY" ]]; then
-        echo -e "  ${S_CO}Brak pełnych danych do wiarygodnej oceny aktywnej. Raport ograniczony do telemetrycznych obserwacji i statusu scope.${S_CN}"
-        echo ""
-    fi
-
-    # ── LAYER 2 ──────────────────────────────────────────────────────────────
-    echo -e "  ${S_CBOLD}▌ WARSTWA 2 — Domena rozgłoszeniowa${S_CN}"
-    local l2_icon="✅" l2_status="OK"
-    (( ${L2_RESULTS[vendor_diversity]:-0} > 5 )) && l2_icon="⚠️" && l2_status="WIELE VENDORÓW (${L2_RESULTS[vendor_diversity]})"
-    printf "  %-4s %-30s %s
-" "$l2_icon" "Vendor diversity" "${L2_RESULTS[vendor_diversity]:-0} OUI"
-    printf "  %-4s %-30s %s
-" "📡" "Access Points" "${L2_RESULTS[ap_count]:-0}"
-    printf "  %-4s %-30s %s
-" "🔀" "Switche/Routery" "${L2_RESULTS[switch_count]:-0}/${L2_RESULTS[router_count]:-0}"
-    printf "  %-4s %-30s %s
-" "⏱" "TTL baseline" "${L2_RESULTS[ttl_baseline]:-?}"
-    echo ""
-
-    if [[ "${AUDIT_STATUS:-READY}" != "READY" ]]; then
-        echo -e "  ${S_CBOLD}▌ STATUS AUDYTU${S_CN}"
-        echo -e "  ${S_CO}Brak materiału dowodowego do wiarygodnej interpretacji L3/polityk ruchu/ekspozycji.${S_CN}"
-        echo -e "  ${S_CO}Nie wyciągam wniosków typu flat network, DNS leak, proxy czy lateral risk przy Hostów: 0.${S_CN}"
-        echo ""
-        echo -e "  ${S_CBOLD}▌ FINDINGS — co naprawić${S_CN}"
-        echo -e "  ${S_CD}  Raport ograniczony: uruchom audyt z osiągalnego punktu sieciowego lub przez orkiestrację enterprise scope.${S_CN}"
-        echo ""
-        local def_score="${DEFENSE_SCORE:-0}"
-        local def_level="${DEFENSE_LEVEL:-Low}"
-        local def_summary="${DEFENSE_SUMMARY:-}"
-        local dc="$S_CR"
-        [[ "$def_level" == "Medium"   ]] && dc="$S_CO"
-        [[ "$def_level" == "High"     ]] && dc="\033[0;34m"
-        [[ "$def_level" == "Advanced" ]] && dc="$S_CG"
-        local def_bar_filled=$(( def_score * 30 / 100 ))
-        local def_bar_empty=$(( 30 - def_bar_filled ))
-        local def_bf; def_bf=$(printf '█%.0s' $(seq 1 $def_bar_filled 2>/dev/null) || printf '█%.0s' {1..1})
-        local def_be; def_be=$(printf '░%.0s' $(seq 1 $def_bar_empty  2>/dev/null) || true)
-        echo -e "  ${S_CBOLD}▌ DEFENSE POSTURE${S_CN}"
-        printf  "  Score: ${dc}${S_CBOLD}%d/100${S_CN}   Poziom: ${dc}${S_CBOLD}%s${S_CN}\n" "$def_score" "$def_level"
-        echo -e "  ${dc}${S_CBOLD}${def_bf}${S_CN}${S_CD}${def_be}${S_CN}"
-        echo -e "  ${S_CD}${def_summary}${S_CN}"
-        echo ""
-        echo -e "  ${S_CC}╚══════════════════════════════════════════════════════════════╝${S_CN}"
-        echo -e "  Raport JSON : ${S_CW}${JSON_REPORT:-N/A}${S_CN}"
-        echo -e "  Raport SARIF: ${S_CW}${OUTPUT_PATH}/EWNAF-REPORT.sarif${S_CN}"
-        echo -e "  Raport HTML : ${S_CW}${HTML_REPORT:-N/A}${S_CN}"
-        [[ -n "${REPORT_PDF:-}" ]] && echo -e "  Raport PDF  : ${S_CW}${REPORT_PDF}${S_CN}"
-        echo ""
-        return 0
-    fi
-
-    # ── LAYER 3 ──────────────────────────────────────────────────────────────
-    echo -e "  ${S_CBOLD}▌ WARSTWA 3 — Routing i segmentacja${S_CN}"
-    local ew_icon ew_txt
-    [[ "${L3_RESULTS[east_west_isolated]:-1}" == "1" ]] && ew_icon="✅" && ew_txt="AKTYWNA" || ew_icon="❌" && ew_txt="BRAK — flat network!"
-    local cs_icon cs_txt
-    [[ "${L3_RESULTS[cross_subnet_ok]:-0}" == "0" ]] && cs_icon="✅" && cs_txt="ZABLOKOWANE" || cs_icon="❌" && cs_txt="OTWARTE!"
-    local sd_icon sd_txt
-    [[ "${L3_RESULTS[silent_drop_detected]:-0}" == "1" ]] && sd_icon="✅" && sd_txt="DROP (stealth)" || sd_icon="ℹ️" && sd_txt="RST (widoczna granica)"
-    printf "  %-4s %-30s %s
-" "$ew_icon" "East-West izolacja" "$ew_txt"
-    printf "  %-4s %-30s %s
-" "$cs_icon" "Cross-subnet ruch" "$cs_txt"
-    printf "  %-4s %-30s %s
-" "$sd_icon" "Polityka odrzucania" "$sd_txt"
-    [[ "${L3_RESULTS[asymmetric_acl]:-0}" == "1" ]] && printf "  %-4s %-30s %s
-" "⚠️" "Asymetryczne ACL" "WYKRYTE"
-    echo ""
-
-    # ── TRAFFIC POLICY ────────────────────────────────────────────────────────
-    echo -e "  ${S_CBOLD}▌ POLITYKA RUCHU${S_CN}"
-    _tp_row() {
-        local flag="$1" label="$2" ok_txt="$3" bad_txt="$4" good_when="$5"
-        local icon txt
-        if [[ "$flag" == "$good_when" ]]; then icon="✅"; txt="$ok_txt"
-        else icon="❌"; txt="$bad_txt"; fi
-        printf "  %-4s %-30s %s
-" "$icon" "$label" "$txt"
-    }
-    _tp_row "${TRAFFIC_POLICY[http_egress_blocked]:-0}"   "HTTP egress"           "ZABLOKOWANY" "OTWARTY" "1"
-    _tp_row "${TRAFFIC_POLICY[dns_controlled]:-0}"        "DNS kontrolowany"      "TAK (filtering)" "NIE — DNS niekontrolowany" "1"
-    _tp_row "${TRAFFIC_POLICY[dns_leak]:-0}"              "DNS leak"              "BRAK (szczelny)" "MOŻLIWY LEAK!" "0"
-    _tp_row "${TRAFFIC_POLICY[transparent_proxy]:-0}"     "Transparent proxy"     "BRAK" "WYKRYTY" "0"
-    _tp_row "${TRAFFIC_POLICY[tls_intercepted]:-0}"       "TLS interception"      "BRAK" "AKTYWNA!" "0"
-    _tp_row "${TRAFFIC_POLICY[rate_limiting]:-0}"         "Rate limiting"         "AKTYWNY" "BRAK" "1"
-    echo ""
-
-    # ── EKSPOZYCJA ───────────────────────────────────────────────────────────
-    echo -e "  ${S_CBOLD}▌ EKSPOZYCJA I LATERAL RISK${S_CN}"
-    printf  "  %-4s %-30s %s
-" "📊" "Flat network %" "${FLAT_PERCENT:-0}%"
-    printf  "  %-4s %-30s %s
-" "↔" "Lateral paths" "${#LATERAL_PATHS[@]}"
-
-    # Surface density (avg usług per host)
-    local total_ports=0
-    for (( i=0; i<DEV_COUNT; i++ )); do
-        total_ports=$(( total_ports + $(port_count "${D_PORTS[$i]:-}") ))
-    done
-    local avg_density=0
-    (( DEV_COUNT > 0 )) && avg_density=$(( total_ports / DEV_COUNT ))
-    printf "  %-4s %-30s %s
-" "🔍" "Avg surface (usług/host)" "$avg_density"
-    echo ""
-
-    # ── HOST RISK TABLE ───────────────────────────────────────────────────────
-    echo -e "  ${S_CBOLD}▌ HOSTY — Risk Profile${S_CN}"
-    printf "  %-18s %-22s %-10s %-10s %s
-" "IP" "ROLA" "SEG" "RISK" "SCORE"
-    echo -e "  ${S_CD}$(printf '─%.0s' {1..70})${S_CN}"
-    for (( i=0; i<DEV_COUNT; i++ )); do
-        local band="${D_RISK_BAND[$i]:-INFO}"
-        local rc
-        case "$band" in
-            CRITICAL) rc="$S_CR" ;; HIGH) rc="[0;33m" ;;
-            MEDIUM) rc="[1;33m" ;; LOW) rc="$S_CG" ;; *) rc="$S_CD" ;;
-        esac
-        local honey="${D_HONEYPOT[$i]:-}"
-        local honey_flag=""
-        [[ "$honey" == HIGH* ]] && honey_flag=" 🍯HONEYPOT"
-        printf "  %-18s %-22s %-10s ${rc}%-10s${S_CN} %s/%s%s
-"             "${D_IP[$i]}" "${D_ROLE[$i]:0:22}" "${D_SEGMENT[$i]}"             "$band" "${D_RAW_SCORE[$i]}" "${D_RESIDUAL_SCORE[$i]}" "$honey_flag"
-    done
-    echo ""
-
-    # ── FINDINGS PODSUMOWANIE ─────────────────────────────────────────────────
-    echo -e "  ${S_CBOLD}▌ FINDINGS — co naprawić${S_CN}"
-    local crit_shown=0
-    for (( i=0; i<DEV_COUNT; i++ )); do
-        [[ -z "${D_FINDINGS[$i]:-}" ]] && continue
-        local IFS_OLD="$IFS"; IFS=$'' read -ra parts <<< "${D_FINDINGS[$i]}"; IFS="$IFS_OLD"
-        local j=0
-        while (( j < ${#parts[@]} )); do
-            local sev="${parts[$j]:-}"
-            case "$sev" in CRITICAL|HIGH|MEDIUM|LOW|INFO)
-                local cat="${parts[$((j+2))]:-}" desc="${parts[$((j+3))]:-}" rec="${parts[$((j+4))]:-}"
-                if [[ "$sev" == "CRITICAL" || "$sev" == "HIGH" ]]; then
-                    local ficon; [[ "$sev" == "CRITICAL" ]] && ficon="🔴" || ficon="🟠"
-                    printf "  %s [%s] %s — %s
-" "$ficon" "${D_IP[$i]}" "$cat" "${desc:0:60}"
-                    [[ -n "$rec" ]] && printf "     ${S_CD}→ %s${S_CN}
-" "${rec:0:70}"
-                    (( crit_shown++ ))
-                fi
-                (( j += 5 )) ;; *) (( j++ )) ;;
-            esac
-        done
-    done
-    for finding in "${NET_FINDINGS[@]:-}"; do
-        [[ -z "$finding" ]] && continue
-        local sev="${finding%%$''*}"
-        [[ "$sev" != "CRITICAL" && "$sev" != "HIGH" ]] && continue
-        local rest="${finding#*$''}"
-        local cat="${rest%%$''*}"; rest="${rest#*$''}"
-        local desc="${rest%%$''*}"; rest="${rest#*$''}"
-        local rec="${rest%%$''*}"
-        local ficon; [[ "$sev" == "CRITICAL" ]] && ficon="🔴" || ficon="🟠"
-        printf "  %s [NET] %s — %s
-" "$ficon" "$cat" "${desc:0:60}"
-        [[ -n "$rec" ]] && printf "     ${S_CD}→ %s${S_CN}
-" "${rec:0:70}"
-        (( crit_shown++ ))
-    done
-    (( crit_shown == 0 )) && echo -e "  ${S_CG}  Brak krytycznych i wysokich findings${S_CN}"
-    echo ""
-
-    # ── SECURITY SYSTEMS ─────────────────────────────────────────────────────
-    if (( ${#SECURITY_SYSTEMS[@]} > 0 )); then
-        echo -e "  ${S_CBOLD}▌ AKTYWNE ZABEZPIECZENIA${S_CN}"
-        for sys in "${SECURITY_SYSTEMS[@]}"; do
-            echo -e "  ${S_CG}  ✓${S_CN} $sys"
-        done
-        echo ""
-    fi
-
-    # ── DEFENSE POSTURE ───────────────────────────────────────────────────────
-    local def_score="${DEFENSE_SCORE:-0}"
-    local def_level="${DEFENSE_LEVEL:-Low}"
-    local def_summary="${DEFENSE_SUMMARY:-}"
-    local dc="$S_CR"
-    [[ "$def_level" == "Medium"   ]] && dc="$S_CO"
-    [[ "$def_level" == "High"     ]] && dc="\033[0;34m"
-    [[ "$def_level" == "Advanced" ]] && dc="$S_CG"
-    local def_bar_filled=$(( def_score * 30 / 100 ))
-    local def_bar_empty=$(( 30 - def_bar_filled ))
-    local def_bf; def_bf=$(printf '█%.0s' $(seq 1 $def_bar_filled 2>/dev/null) || printf '█%.0s' {1..1})
-    local def_be; def_be=$(printf '░%.0s' $(seq 1 $def_bar_empty  2>/dev/null) || true)
-    echo -e "  ${S_CBOLD}▌ DEFENSE POSTURE${S_CN}"
-    printf  "  Score: ${dc}${S_CBOLD}%d/100${S_CN}   Poziom: ${dc}${S_CBOLD}%s${S_CN}\n" "$def_score" "$def_level"
-    echo -e "  ${dc}${S_CBOLD}${def_bf}${S_CN}${S_CD}${def_be}${S_CN}"
-    echo -e "  ${S_CD}${def_summary}${S_CN}"
-    echo ""
-
-    echo -e "  ${S_CC}╚══════════════════════════════════════════════════════════════╝${S_CN}"
-    echo -e "  Raport JSON : ${S_CW}${JSON_REPORT:-N/A}${S_CN}"
-    echo -e "  Raport SARIF: ${S_CW}${OUTPUT_PATH}/EWNAF-REPORT.sarif${S_CN}"
-    echo -e "  Raport HTML : ${S_CW}${HTML_REPORT:-N/A}${S_CN}"
-    [[ -n "${REPORT_PDF:-}" ]] && echo -e "  Raport PDF  : ${S_CW}${REPORT_PDF}${S_CN}"
-    echo ""
+_emit_report_paths() {
+    [[ "${EWNAF_EMIT_PATHS:-1}" == "1" ]] || return 0
+    {
+        echo "EWNAF v${VERSION} — audit complete"
+        echo "  JSON : ${JSON_REPORT:-N/A}"
+        echo "  HTML : ${HTML_REPORT:-N/A}"
+        echo "  SARIF: ${OUTPUT_PATH}/EWNAF-REPORT.sarif"
+        [[ -n "${REPORT_PDF:-}" ]] && echo "  PDF  : ${REPORT_PDF}"
+    } >&2
 }
-
-
-
-###############################################################################
-# SARIF 2.1.0 EXPORT — Static Analysis Results Interchange Format
-# spec: https://docs.oasis-open.org/sarif/sarif/v2.1.0/
-###############################################################################
 
 export_sarif() {
     local sarif_file="$OUTPUT_PATH/EWNAF-REPORT.sarif"
@@ -6584,20 +5054,6 @@ export_sarif() {
 SARIF_HEREDOC
     log_ok "SARIF 2.1.0: $sarif_file"
 }
-
-
-
-# [20] HTML (pełna wersja jak v6 + sekcja Topology)
-
-
-###############################################################################
-# HTML REPORT — BILINGUAL PL/EN — 8 SEKCJI — PEŁNA STRUKTURA AUDYTOWA
-###############################################################################
-
-
-# ── RENDERING 2.0 (MINI) — HTML FROM JSON SNAPSHOT ──────────────────────────
-# Cel: renderer NIE dotyka runtime global state (D_*, TOPO, BH, ...) i nie wybucha
-# przy set -u. Jeśli python3 dostępny i JSON_REPORT istnieje → render z JSON.
 
 export_html_from_json() {
     [[ -z "${JSON_REPORT:-}" || ! -s "$JSON_REPORT" ]] && return 1
@@ -6713,7 +5169,7 @@ with open(out,"w",encoding="utf-8") as f:
 PYHTML
     local rc=$?
     if (( rc != 0 )) || [[ ! -s "$HTML_REPORT" ]]; then
-        log "HTML render failed; brak poprawnego pliku wyjściowego." "WARN"
+        log "HTML render failed; no valid output file." "WARN"
         return 1
     fi
     log "HTML gotowy (JSON renderer): $HTML_REPORT ($(wc -l < "$HTML_REPORT") linii)" "OK"
@@ -6721,13 +5177,11 @@ PYHTML
 }
 
 export_html() {
-    # Prefer safe renderer when JSON exists; fallback to legacy template
     if export_html_from_json; then
         return 0
     fi
     export_html_legacy
 }
-
 
 export_html_legacy() {
         log "Generowanie SARIF 2.1.0..."
@@ -6742,19 +5196,16 @@ export_html_legacy() {
     local def_level="${DEFENSE_LEVEL:-Low}"
     local def_summary="${DEFENSE_SUMMARY:-}"
 
-    # Kolor defense level
     local def_color="#ef4444"
     [[ "$def_level" == "Medium"   ]] && def_color="#f97316"
     [[ "$def_level" == "High"     ]] && def_color="#3b82f6"
     [[ "$def_level" == "Advanced" ]] && def_color="#22c55e"
 
-    # Kolor score
     local sc="#ef4444"
     (( gs >= 70 )) && sc="#22c55e"
     (( gs >= 55 && gs < 70 )) && sc="#eab308"
     (( gs >= 40 && gs < 55 )) && sc="#f97316"
 
-    # Tier
     local tier="Tier 5 — Niewystarczający / Insufficient"
     local tier_en="Insufficient"
     local tier_color="#ef4444"
@@ -6763,19 +5214,16 @@ export_html_legacy() {
     (( maturity >= 60 )) && { tier="Tier 2 — Zaawansowany / Advanced";     tier_en="Advanced";     tier_color="#3b82f6"; }
     (( maturity >= 80 )) && { tier="Tier 1 — Lider / Leader";              tier_en="Leader";       tier_color="#22c55e"; }
 
-    # Werdykt PL/EN
-    local verdict_pl="Krytyczne zagrożenie" verdict_en="Critical Threat"
-    (( gs >= 30 )) && { verdict_pl="Wysokie ryzyko";      verdict_en="High Risk"; }
-    (( gs >= 50 )) && { verdict_pl="Umiarkowane ryzyko";  verdict_en="Moderate Risk"; }
-    (( gs >= 70 )) && { verdict_pl="Dobry poziom";        verdict_en="Good Security Posture"; }
-    (( gs >= 85 )) && { verdict_pl="Wzorowy poziom";      verdict_en="Exemplary Security"; }
+    local verdict_detail="Critical Threat" verdict_en="Critical Threat"
+    (( gs >= 30 )) && { verdict_detail="Wysokie ryzyko";      verdict_en="High Risk"; }
+    (( gs >= 50 )) && { verdict_detail="Umiarkowane ryzyko";  verdict_en="Moderate Risk"; }
+    (( gs >= 70 )) && { verdict_detail="Dobry poziom";        verdict_en="Good Security Posture"; }
+    (( gs >= 85 )) && { verdict_detail="Wzorowy poziom";      verdict_en="Exemplary Security"; }
 
-    # Threat Score Formal — kolor
     local ts_color="#22c55e"
     (( ts >= 30 )) && ts_color="#eab308"
     (( ts >= 60 )) && ts_color="#ef4444"
 
-    # Kolory behawioralne
     local bh_threat="${EXEC_BH_THREAT:-0}"
     local bh_corr="${EXEC_BH_CORRELATION:-0}"
     local bh_adapt="${EXEC_BH_ADAPTATION:-0}"
@@ -6788,7 +5236,6 @@ export_html_legacy() {
     [[ "$bh_adapt" == "1" ]] && bh_adapt_label="TAK / YES" || true
     (( bh_threat >= 60 )) && bh_threat_c="#ef4444"
 
-    # --- Tabela urządzeń ---
     local dev_rows=""
     for (( i=0; i<DEV_COUNT; i++ )); do
         local band_c="#6b7280"
@@ -6804,13 +5251,12 @@ export_html_legacy() {
         dev_rows+="<td>$(html_esc "${D_HOSTNAME[$i]:-}")</td>"
         dev_rows+="<td>$(html_esc "${D_ROLE[$i]:-}")</td>"
         dev_rows+="<td>$(html_esc "${D_OS[$i]:-}")</td>"
-        dev_rows+="<td><code>$(html_esc "${D_PORTS[$i]:-brak}")</code></td>"
+        dev_rows+="<td><code>$(html_esc "${D_PORTS[$i]:-none}")</code></td>"
         dev_rows+="<td><span style='color:$band_c;font-weight:700'>$(html_esc "${D_RISK_BAND[$i]:-}")</span>&nbsp;$(html_esc "${D_RESIDUAL_SCORE[$i]:-0}")</td>"
         dev_rows+="<td style='color:#94a3b8;font-size:.75rem'>$(html_esc "$bh_zone") RS=$(html_esc "$bh_rs") DP=$(html_esc "$bh_dp")</td>"
         dev_rows+="</tr>"
     done
 
-    # --- Tabela findings ---
     local find_rows="" net_rows=""
     for (( i=0; i<DEV_COUNT; i++ )); do
         [[ -z "${D_FINDINGS[$i]:-}" ]] && continue
@@ -6832,7 +5278,6 @@ export_html_legacy() {
             [[ -z "$fcvss" ]] && fcvss=$(cvss_for_finding "$fsev" "$fcat")
             local fc="#6b7280"
             case "$fsev" in CRITICAL) fc="#ef4444";; HIGH|MEDIUM) fc="#f97316";; LOW) fc="#22c55e";; esac
-            # CVSS badge color
             local cvss_c="#6b7280"
             local cvss_n; cvss_n=$(echo "$fcvss" | cut -d. -f1)
             (( ${cvss_n:-0} >= 9 )) && cvss_c="#ef4444"
@@ -6866,14 +5311,12 @@ export_html_legacy() {
         net_rows+="</tr>"
     done
 
-    # --- Systemy obronne ---
     local sec_list=""
     for sys in "${SECURITY_SYSTEMS[@]:-}"; do
         sec_list+="<li>✓ $(html_esc "$sys")</li>"
     done
-    [[ -z "$sec_list" ]] && sec_list="<li style='color:#6b7280'>Brak wykrytych / None detected</li>"
+    [[ -z "$sec_list" ]] && sec_list="<li style='color:#6b7280'>None detected</li>"
 
-    # --- Compliance matrix ---
     local comp_rows=""
     for (( i=0; i<DEV_COUNT; i++ )); do
         [[ -z "${D_FINDINGS[$i]:-}" ]] && continue
@@ -6902,7 +5345,6 @@ export_html_legacy() {
         done
     done
 
-    # --- Mapa behawioralna ---
     local bmap_rows=""
     for ip in "${!BMAP[@]}"; do
         local zone="${BMAP[$ip]}"
@@ -6929,42 +5371,38 @@ export_html_legacy() {
         bmap_rows+="</tr>"
     done
 
-
-    # --- Sekcja 1d: Faza X KPI + Zone Map + Per-host cards (precomputed) ---
     local s1d_kpi="" s1d_zone_rows="" s1d_host_cards=""
 
-    # KPI heat/threat (z dynamic color)
     local _h="${SESSION_STATE[heat]:-0}" _hc="#22c55e"
     (( _h >= 70 )) && _hc="#ef4444" || (( _h >= 40 )) && _hc="#f97316" || true
     local _tl="${SESSION_STATE[threat_level]:-0}" _tlc="#22c55e"
     (( _tl >= 60 )) && _tlc="#ef4444" || (( _tl >= 30 )) && _tlc="#f97316" || true
     local _dyn=$(( ${PHASE_X[zones_adaptive]:-0} + ${PHASE_X[zones_escalating]:-0} ))
     s1d_kpi="<div class="kpi"><div class="v" style="color:${_hc}">${_h}</div><div class="l">Heat Level</div><div class="sl">Poziom reakcji sieci</div></div>"
-    s1d_kpi+="<div class="kpi"><div class="v" style="color:${_tlc}">${_tl}</div><div class="l">Threat Level</div><div class="sl">Poziom zagrożenia</div></div>"
-    s1d_kpi+="<div class="kpi"><div class="v" style="color:#60a5fa">${SESSION_STATE[correlation_score]:-0}</div><div class="l">Correlation Score</div><div class="sl">IDS/NDR aktywność</div></div>"
+    s1d_kpi+="<div class="kpi"><div class="v" style="color:${_tlc}">${_tl}</div><div class="l">Threat Level</div><div class="sl">Threat Level</div></div>"
+    s1d_kpi+="<div class="kpi"><div class="v" style="color:#60a5fa">${SESSION_STATE[correlation_score]:-0}</div><div class="l">Correlation Score</div><div class="sl">IDS/NDR activity</div></div>"
     s1d_kpi+="<div class="kpi"><div class="v" style="color:#a78bfa">${PHASE_X[zones_deception]:-0}</div><div class="l">Deception Zones</div><div class="sl">Deception / tarpit</div></div>"
     s1d_kpi+="<div class="kpi"><div class="v" style="color:#f97316">${_dyn}</div><div class="l">Dynamic Defence</div><div class="sl">Adaptive + Escalating</div></div>"
     s1d_kpi+="<div class="kpi"><div class="v" style="color:#ef4444">${PHASE_X[zones_exposed]:-0}</div><div class="l">Exposed Zones</div><div class="sl">Bez obrony dynamicznej</div></div>"
     s1d_kpi+="<div class="kpi"><div class="v" style="color:#94a3b8">${SESSION_STATE[total_probes]:-0}</div><div class="l">Total Probes</div><div class="sl">Liczba sond</div></div>"
     s1d_kpi+="<div class="kpi"><div class="v" style="color:#94a3b8">${PHASE_X[hosts_total]:-0}</div><div class="l">Hosts Analysed</div><div class="sl">Hosty przeanalizowane</div></div>"
 
-    # Zone map rows
     for ip in "${!BMAP[@]}"; do
         local bzone="${BMAP[$ip]}"
-        local bzc="#6b7280" bzi="?" binterpret="Nieznana strefa"
+        local bzc="#6b7280" bzi="?" binterpret="Unknown zone"
         local bconf="${BH["${ip}:zone_confidence"]:-0}"
         local bbase="${BH["${ip}:80:baseline_ms"]:-?}"
         local bwin="${BH["${ip}:80:window_type"]:-—}"
         local bban="${BH["${ip}:80:escalation_probe_n"]:-—}"
         local brec="${BH["${ip}:80:recovery"]:-—}"
         case "$bzone" in
-            DECEPTION)  bzc="#a78bfa" bzi="🎭" binterpret="Deception/tarpit — wyniki mogą być nieautentyczne" ;;
-            CORRELATED) bzc="#60a5fa" bzi="🔗" binterpret="IDS/NDR koreluje zdarzenia — pełna widoczność audytu" ;;
-            ADAPTIVE)   bzc="#f97316" bzi="🧠" binterpret="Reputacyjny blacklist — pamięta IP audytora" ;;
-            ESCALATING) bzc="#eab308" bzi="📈" binterpret="Rate-limiter — próg bana przy N=${bban} próbach" ;;
-            REACTIVE)   bzc="#22c55e" bzi="⚡" binterpret="Prosta ochrona — bez persistent memory" ;;
-            EXPOSED)    bzc="#ef4444" bzi="⚠" binterpret="Brak obrony dynamicznej — wysoka ekspozycja" ;;
-            SILENT)     bzc="#94a3b8" bzi="🔇" binterpret="DROP policy — host nie ujawnia informacji" ;;
+            DECEPTION)  bzc="#a78bfa" bzi="🎭" binterpret="Deception/tarpit — results may be inauthentic" ;;
+            CORRELATED) bzc="#60a5fa" bzi="🔗" binterpret="IDS/NDR correlating events — full audit visibility" ;;
+            ADAPTIVE)   bzc="#f97316" bzi="🧠" binterpret="Reputation blacklist — remembers auditor IP" ;;
+            ESCALATING) bzc="#eab308" bzi="📈" binterpret="Rate-limiter — ban threshold at N=${bban} probes" ;;
+            REACTIVE)   bzc="#22c55e" bzi="⚡" binterpret="Basic defence — no persistent memory" ;;
+            EXPOSED)    bzc="#ef4444" bzi="⚠" binterpret="No dynamic defence — high exposure" ;;
+            SILENT)     bzc="#94a3b8" bzi="🔇" binterpret="DROP policy — host discloses no information" ;;
         esac
         local _banc="var(--m)"
         [[ "$bban" != "—" ]] && (( bban <= 3 )) && _banc="#ef4444" || true
@@ -6982,9 +5420,8 @@ export_html_legacy() {
         s1d_zone_rows+="<td style='padding:6px 10px;color:var(--m);font-size:.75rem'>$(html_esc "$binterpret")</td>"
         s1d_zone_rows+="</tr>"
     done
-    [[ -z "$s1d_zone_rows" ]] && s1d_zone_rows="<tr><td colspan='8' style='color:var(--m);text-align:center'>Faza X nie uruchomiona / Phase X not run</td></tr>"
+    [[ -z "$s1d_zone_rows" ]] && s1d_zone_rows="<tr><td colspan='8' style='color:var(--m);text-align:center'>Phase X not run</td></tr>"
 
-    # Per-host score cards
     for ip in "${!BMAP[@]}"; do
         local bzone="${BMAP[$ip]}"
         [[ "$bzone" == "UNKNOWN" || "$bzone" == "OFFLINE" ]] && continue
@@ -7022,7 +5459,7 @@ export_html_legacy() {
         s1d_host_cards+="<div style='font-size:.75rem;color:var(--m)'>"
         s1d_host_cards+="<div><strong>Baseline:</strong> ${bbase2}ms (variance: ${bvar}ms)</div>"
         s1d_host_cards+="<div><strong>Window type:</strong> $(html_esc "$bwin2")</div>"
-        s1d_host_cards+="<div><strong>Ban threshold:</strong> N=$(html_esc "$bban2") prób</div>"
+        s1d_host_cards+="<div><strong>Ban threshold:</strong> N=$(html_esc "$bban2") probes</div>"
         s1d_host_cards+="<div><strong>Recovery:</strong> $(html_esc "$brec2")</div>"
         s1d_host_cards+="<div><strong>Post-burst latency:</strong> ${bpb}ms</div>"
         s1d_host_cards+="<div><strong>Return delta:</strong> ${brd}ms</div>"
@@ -7031,9 +5468,7 @@ export_html_legacy() {
         s1d_host_cards+="</div></div></div>"
     done
 
-
-    # Precompute VPN i firewall display (dla heredoc - brak nested subshells)
-    local vpn_display="<span style='color:#eab308'>✗ Brak / None</span>"
+    local vpn_display="<span style='color:#eab308'>✗ None</span>"
     if [[ "${TOPO[vpn_detected]:-0}" == "1" ]]; then
         vpn_display="<span style='color:#22c55e'>✓ $(html_esc "${TOPO[vpn_type]:-VPN}")</span>"
     fi
@@ -7042,53 +5477,39 @@ export_html_legacy() {
         fw_display="<span style='color:#22c55e'>✓ $(html_esc "${TOPO[firewall_type]}")</span>"
     fi
 
-
-    # ── PRECOMPUTE: wszystkie wyrażenia warunkowe dla heredoc ──────────────────
-    # Sekcja 2: Defence systems
-    local pc_rate_lim=""; [[ "${TRAFFIC_POLICY[rate_limiting]:-0}" == "1" ]] && pc_rate_lim="<li>✓ Rate Limiting aktywny</li>"
-    local pc_dns_ctrl_li=""; [[ "${TRAFFIC_POLICY[dns_controlled]:-0}" == "1" ]] && pc_dns_ctrl_li="<li>✓ DNS Filtering/Control aktywny</li>"
-    # IDS
-    local pc_ids_li=""; [[ "${TOPO[ids_detected]:-0}" == "1" ]] && pc_ids_li="<li>✓ IDS/IPS wykryty / IDS detected</li>"
-    # Heuristics
+    local pc_rate_lim=""; [[ "${TRAFFIC_POLICY[rate_limiting]:-0}" == "1" ]] && pc_rate_lim="<li>✓ Rate Limiting active</li>"
+    local pc_dns_ctrl_li=""; [[ "${TRAFFIC_POLICY[dns_controlled]:-0}" == "1" ]] && pc_dns_ctrl_li="<li>✓ DNS Filtering/Control active</li>"
+    local pc_ids_li=""; [[ "${TOPO[ids_detected]:-0}" == "1" ]] && pc_ids_li="<li>✓ IDS/IPS detected</li>"
     local pc_hp_cls="ok"; [[ "${TOPO[honeypot_detected]:-0}" == "1" ]] && pc_hp_cls="crit"
-    local pc_hp_val="✗ Nie wykryto / Not detected"; [[ "${TOPO[honeypot_detected]:-0}" == "1" ]] && pc_hp_val="✓ WYKRYTY / DETECTED"
+    local pc_hp_val="✗ Not detected"; [[ "${TOPO[honeypot_detected]:-0}" == "1" ]] && pc_hp_val="✓ WYKRYTY / DETECTED"
     local pc_mirage_cls="ok"; [[ "${TOPO[mirage_detected]:-0}" == "1" ]] && pc_mirage_cls="warn"
-    local pc_mirage_val="✗ Nie wykryto / Not detected"; [[ "${TOPO[mirage_detected]:-0}" == "1" ]] && pc_mirage_val="✓ WYKRYTY / DETECTED"
+    local pc_mirage_val="✗ Not detected"; [[ "${TOPO[mirage_detected]:-0}" == "1" ]] && pc_mirage_val="✓ WYKRYTY / DETECTED"
     local pc_sdrop_val="✗ NIE / NO"; [[ "${L3_RESULTS[silent_drop_detected]:-0}" == "1" ]] && pc_sdrop_val="✓ TAK / YES"
-    # L3 routing
     local pc_ew_iso="<span style='color:#ef4444'>✗ Nie / No</span>"; [[ "${L3_RESULTS[east_west_isolated]:-0}" == "1" ]] && pc_ew_iso="<span style='color:#22c55e'>✓ Tak / Yes</span>"
     local pc_cross_sub="<span style='color:#eab308'>? Nie zbadano</span>"; [[ "${L3_RESULTS[cross_subnet_ok]:-1}" == "0" ]] && pc_cross_sub="<span style='color:#22c55e'>✓ Tak / Yes</span>"
-    local pc_drop_pol="<span style='color:#eab308'>REJECT lub brak danych</span>"; [[ "${L3_RESULTS[silent_drop_detected]:-0}" == "1" ]] && pc_drop_pol="<span style='color:#22c55e'>✓ Silent DROP</span>"
-    # DNS
+    local pc_drop_pol="<span style='color:#eab308'>REJECT or no data</span>"; [[ "${L3_RESULTS[silent_drop_detected]:-0}" == "1" ]] && pc_drop_pol="<span style='color:#22c55e'>✓ Silent DROP</span>"
     local pc_dns_ctrl_td="<span style='color:#eab308'>✗ Nie / No</span>"; [[ "${TRAFFIC_POLICY[dns_controlled]:-0}" == "1" ]] && pc_dns_ctrl_td="<span style='color:#22c55e'>✓ Tak / Yes</span>"
     local pc_dns_malware="<span style='color:#ef4444'>✗ Nie</span>"; [[ "${TRAFFIC_POLICY[dns_malware_blocked]:-0}" == "1" ]] && pc_dns_malware="<span style='color:#22c55e'>✓ Tak</span>"
-    # Egress
-    local pc_http_egr="<span style='color:#f97316'>✗ Otwarty / Open</span>"; [[ "${TRAFFIC_POLICY[http_egress_blocked]:-0}" == "1" ]] && pc_http_egr="<span style='color:#22c55e'>✓ Zablokowany / Blocked</span>"
-    # TLS
-    local pc_tls_int="<span style='color:#22c55e'>✓ Brak / None</span>"; [[ "${TRAFFIC_POLICY[tls_intercepted]:-0}" == "1" ]] && pc_tls_int="<span style='color:#ef4444'>✗ INTERCEPT</span>"
-    local pc_tproxy="<span style='color:#22c55e'>✓ Brak / None</span>"; [[ "${TRAFFIC_POLICY[transparent_proxy]:-0}" == "1" ]] && pc_tproxy="<span style='color:#eab308'>✗ Wykryty / Detected</span>"
-    # VPN/NAT
-    local pc_masq="<span style='color:#eab308'>✗ Nie wykryto</span>"; [[ "${TOPO[masquerade_active]:-0}" == "1" ]] && pc_masq="<span style='color:#22c55e'>✓ Aktywna</span>"
-    local pc_dnat="<span style='color:#22c55e'>✓ Brak / None</span>"
+    local pc_http_egr="<span style='color:#f97316'>✗ Open</span>"; [[ "${TRAFFIC_POLICY[http_egress_blocked]:-0}" == "1" ]] && pc_http_egr="<span style='color:#22c55e'>✓ Blocked</span>"
+    local pc_tls_int="<span style='color:#22c55e'>✓ None</span>"; [[ "${TRAFFIC_POLICY[tls_intercepted]:-0}" == "1" ]] && pc_tls_int="<span style='color:#ef4444'>✗ INTERCEPT</span>"
+    local pc_tproxy="<span style='color:#22c55e'>✓ None</span>"; [[ "${TRAFFIC_POLICY[transparent_proxy]:-0}" == "1" ]] && pc_tproxy="<span style='color:#eab308'>✗ Detected</span>"
+    local pc_masq="<span style='color:#eab308'>✗ Not detected</span>"; [[ "${TOPO[masquerade_active]:-0}" == "1" ]] && pc_masq="<span style='color:#22c55e'>✓ Active</span>"
+    local pc_dnat="<span style='color:#22c55e'>✓ None</span>"
     [[ "${TOPO[double_nat]:-0}" == "1" ]] && pc_dnat="<span style='color:#f97316'>⚠ TAK (${TOPO[vpn_wan_ip]:-?})</span>"
-    # Rate limit & IPS
-    local pc_ratelim_td="<span style='color:#ef4444'>✗ Brak / None</span>"; [[ "${TRAFFIC_POLICY[rate_limiting]:-0}" == "1" ]] && pc_ratelim_td="<span style='color:#22c55e'>✓ Aktywny / Active</span>"
-    local pc_autoban="<span style='color:#eab308'>✗ Nie wykryto</span>"
-    [[ "${TOPO[autoban_detected]:-0}" == "1" ]] && pc_autoban="<span style='color:#22c55e'>✓ Wykryty (${TOPO[autoban_confidence]:-?}%)</span>"
-    local pc_ids_td="<span style='color:#ef4444'>✗ Nie wykryto</span>"
-    [[ "${TOPO[ids_detected]:-0}" == "1" ]] && pc_ids_td="<span style='color:#22c55e'>✓ Wykryto (${TOPO[ids_confidence]:-?}%)</span>"
-    local pc_tarpit="<span style='color:#eab308'>✗ Nie wykryto</span>"; [[ "${TOPO[ssh_tarpit_detected]:-0}" == "1" ]] && pc_tarpit="<span style='color:#22c55e'>✓ Aktywny</span>"
-    # Compliance CIS/ISO
+    local pc_ratelim_td="<span style='color:#ef4444'>✗ None</span>"; [[ "${TRAFFIC_POLICY[rate_limiting]:-0}" == "1" ]] && pc_ratelim_td="<span style='color:#22c55e'>✓ Active</span>"
+    local pc_autoban="<span style='color:#eab308'>✗ Not detected</span>"
+    [[ "${TOPO[autoban_detected]:-0}" == "1" ]] && pc_autoban="<span style='color:#22c55e'>✓ Detected (${TOPO[autoban_confidence]:-?}%)</span>"
+    local pc_ids_td="<span style='color:#ef4444'>✗ Not detected</span>"
+    [[ "${TOPO[ids_detected]:-0}" == "1" ]] && pc_ids_td="<span style='color:#22c55e'>✓ Detected (${TOPO[ids_confidence]:-?}%)</span>"
+    local pc_tarpit="<span style='color:#eab308'>✗ Not detected</span>"; [[ "${TOPO[ssh_tarpit_detected]:-0}" == "1" ]] && pc_tarpit="<span style='color:#22c55e'>✓ Active</span>"
     local pc_cis12="<span style='color:#ef4444'>✗ CIS-12</span>"; [[ "${L3_RESULTS[east_west_isolated]:-0}" == "1" ]] && pc_cis12="<span style='color:#22c55e'>✓ CIS-12</span>"
     local pc_cis9="<span style='color:#ef4444'>✗ CIS-9</span>"; [[ "${TRAFFIC_POLICY[dns_controlled]:-0}" == "1" ]] && pc_cis9="<span style='color:#22c55e'>✓ CIS-9</span>"
     local pc_cis13="<span style='color:#ef4444'>✗ CIS-13</span>"; [[ "${TOPO[ids_detected]:-0}" == "1" ]] && pc_cis13="<span style='color:#22c55e'>✓ CIS-13</span>"
     local pc_iso_ac="<span style='color:#eab308'>? A.9 / PR.AC</span>"; [[ "${L3_RESULTS[cross_subnet_ok]:-1}" == "0" ]] && pc_iso_ac="<span style='color:#22c55e'>✓ A.9 / PR.AC</span>"
     local pc_iso_ds="<span style='color:#ef4444'>✗ A.10 / PR.DS</span>"; [[ "${TRAFFIC_POLICY[tls_intercepted]:-0}" == "0" ]] && pc_iso_ds="<span style='color:#22c55e'>✓ A.10 / PR.DS</span>"
     local pc_gdpr="<span style='color:#ef4444'>✗ Art. 32</span>"; [[ "${TRAFFIC_POLICY[dns_leak]:-0}" == "0" ]] && pc_gdpr="<span style='color:#22c55e'>✓ Art. 32</span>"
-    # Cloud/Fleet
-    local pc_fleet="✗ Nie wykryto"; [[ "${TOPO[fleet_detected]:-0}" == "1" ]] && pc_fleet="<span style='color:#22c55e'>✓ Aktywny / Active</span>"
+    local pc_fleet="✗ Not detected"; [[ "${TOPO[fleet_detected]:-0}" == "1" ]] && pc_fleet="<span style='color:#22c55e'>✓ Active</span>"
     local pc_prowler="✗ Nie zbadano"; [[ "${PROWLER_RESULT[scan_started]:-0}" == "1" ]] && pc_prowler="<span style='color:#22c55e'>✓ Uruchomiony / Running</span>"
-    # ── END PRECOMPUTE ──────────────────────────────────────────────────────────
     local _u_was=0; [[ $- == *u* ]] && _u_was=1; set +u
     cat > "$HTML_REPORT" <<HTMLEOF
 <!DOCTYPE html>
@@ -7184,21 +5605,21 @@ footer{background:var(--s);border-top:1px solid var(--b);padding:16px 40px;text-
     </div>
     <div class="hdr-meta">
       Data / Date: $(date '+%Y-%m-%d %H:%M')<br>
-      Wygenerowano przez / Generated by: EWNAF Behavioural Engine<br>
-      Hosty / Hosts: ${DEV_COUNT} aktywnych
+      Generated by: EWNAF Behavioural Engine<br>
+      Hosts: ${DEV_COUNT} active
     </div>
   </div>
 </header>
 
 <nav>
   <a href="#s1">1. Executive Summary</a>
-  <a href="#s2">2. Topologia / Topology</a>
-  <a href="#s3">3. L2/L3 Infrastruktura</a>
-  <a href="#s4">4. Profil Hostów / Hosts</a>
-  <a href="#s5">5. Usługi / Services</a>
+  <a href="#s2">2. Topology</a>
+  <a href="#s3">3. L2/L3 Infrastructure</a>
+  <a href="#s4">4. Host Profile</a>
+  <a href="#s5">5. Services</a>
   <a href="#s6">6. Behavioral Recon</a>
   <a href="#s1b">&#x26A1; Kill Chain</a>
-  <a href="#s1d">&#x1F9E0; Faza X</a>
+  <a href="#s1d">&#x1F9E0; Phase X</a>
   <a href="#s1c">&#x1F5FA; Roadmap</a>
   <a href="#s7">7. Findings</a>
   <a href="#s8">8. Compliance</a>
@@ -7210,18 +5631,18 @@ footer{background:var(--s);border-top:1px solid var(--b);padding:16px 40px;text-
 <!-- SEKCJA 1: EXECUTIVE SUMMARY                                 -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="section" id="s1">
-<h2>1. Podsumowanie menedżerskie <span class="en">Executive Summary</span></h2>
+<h2>1. Executive Summary</h2>
 
 <div class="verdict">
   <div class="score-circle" style="border-color:${sc};color:${sc}">
     ${GLOBAL_SCORE:-0}
   </div>
   <div class="verdict-text">
-    <h3 style="color:${sc}">$(html_esc "$verdict_pl") / $(html_esc "$verdict_en")</h3>
+    <h3 style="color:${sc}">$(html_esc "$verdict_detail") / $(html_esc "$verdict_en")</h3>
     <p>$(html_esc "$tier")</p>
     <p style="margin-top:6px;font-size:.72rem;color:var(--m)">
       Ryzyko rezydualne / Residual Risk = Ryzyko surowe − Mitigacje &nbsp;|&nbsp;
-      Wynik obejmuje ${DEV_COUNT} hostów, ${#NET_FINDINGS[@]} znalezisk sieciowych
+      Results cover ${DEV_COUNT} hosts, ${#NET_FINDINGS[@]} network findings
     </p>
   </div>
   <div class="verdict-grade" style="color:${sc}">$(html_esc "$grade")</div>
@@ -7231,7 +5652,7 @@ footer{background:var(--s);border-top:1px solid var(--b);padding:16px 40px;text-
   <div class="kpi">
     <div class="v" style="color:${sc}">$(html_esc "${GLOBAL_SCORE:-0}")</div>
     <div class="l">Global Score</div>
-    <div class="sl">Wynik końcowy</div>
+    <div class="sl">Final Score</div>
   </div>
   <div class="kpi">
     <div class="v" style="color:#94a3b8">$(html_esc "$grade")</div>
@@ -7241,7 +5662,7 @@ footer{background:var(--s);border-top:1px solid var(--b);padding:16px 40px;text-
   <div class="kpi">
     <div class="v" style="color:#3b82f6">$(html_esc "${MATURITY_SCORE:-0}")</div>
     <div class="l">Maturity Score</div>
-    <div class="sl">Dojrzałość</div>
+    <div class="sl">Maturity</div>
   </div>
   <div class="kpi">
     <div class="v" style="color:${def_color}">$(html_esc "$def_score")<small style="font-size:.7rem">/100</small></div>
@@ -7266,7 +5687,7 @@ footer{background:var(--s);border-top:1px solid var(--b);padding:16px 40px;text-
   <div class="kpi">
     <div class="v" style="color:#bh_threat_c">$(html_esc "$bh_threat")</div>
     <div class="l">Threat Level</div>
-    <div class="sl">Poziom zagrożenia</div>
+    <div class="sl">Threat Level</div>
   </div>
   <div class="kpi">
     <div class="v" style="color:#60a5fa">$(html_esc "$bh_corr")</div>
@@ -7281,7 +5702,7 @@ footer{background:var(--s);border-top:1px solid var(--b);padding:16px 40px;text-
 </div>
 
 <div class="card" style="border-left:3px solid #ef4444">
-  <h3>🎯 Podsumowanie dla zarządu / C-Suite Executive Briefing</h3>
+  <h3>🎯 C-Suite Executive Briefing</h3>
   <div style="margin-top:10px">
 
     $(
@@ -7295,41 +5716,41 @@ footer{background:var(--s);border-top:1px solid var(--b);padding:16px 40px;text-
 
     echo "<p style='font-size:.85rem;line-height:1.6;color:var(--t)'>"
     if (( chain >= 2 )); then
-        echo "<strong style='color:#ef4444'>WYSOKIE RYZYKO KOMPROMITACJI.</strong> "
-        echo "Audyt zidentyfikował kompletny łańcuch ataku (kill chain): wektor dostępu, "
-        echo "ścieżki lateral movement i mechanizm eskalacji uprawnień. "
-        echo "Doświadczony atakujący może przejąć sieć bez wykrycia."
+        echo "<strong style='color:#ef4444'>HIGH COMPROMISE RISK.</strong> "
+        echo "Audit identified a complete attack chain: access vector, "
+        echo "lateral movement paths and privilege escalation. "
+        echo "An experienced attacker could compromise the network undetected."
     elif (( critical_h > 0 )); then
-        echo "<strong style='color:#f97316'>KRYTYCZNE PODATNOŚCI.</strong> "
-        echo "Wykryto ${critical_h} hostów z poziomem ryzyka CRITICAL wymagających natychmiastowej interwencji."
+        echo "<strong style='color:#f97316'>CRITICAL VULNERABILITIES.</strong> "
+        echo "Detected ${critical_h} CRITICAL-risk hosts requiring immediate intervention."
     elif (( high_h > 0 )); then
-        echo "<strong style='color:#eab308'>PODATNOŚCI WYSOKIEGO RYZYKA.</strong> "
-        echo "Wykryto ${high_h} hostów z istotnymi lukami bezpieczeństwa."
+        echo "<strong style='color:#eab308'>HIGH-RISK VULNERABILITIES.</strong> "
+        echo "Detected ${high_h} hosts with significant security gaps."
     else
-        echo "<strong style='color:#22c55e'>AKCEPTOWALNY POZIOM RYZYKA.</strong> "
-        echo "Sieć prezentuje podstawowy poziom zabezpieczeń. Rekomendacje poniżej."
+        echo "<strong style='color:#22c55e'>ACCEPTABLE RISK LEVEL.</strong> "
+        echo "Network demonstrates baseline security posture. Recommendations below."
     fi
     echo "</p>"
 
     # Business impact
     echo "<p style='font-size:.82rem;color:var(--m);margin-top:8px'>"
-    echo "<strong>Potencjalny wpływ biznesowy / Business Impact:</strong> "
+    echo "<strong>Business Impact:</strong> "
     if (( chain >= 2 )); then
-        echo "Naruszenie danych, przerwa operacyjna, odpowiedzialność regulacyjna (GDPR Art.33/34, NIS2)."
+        echo "Data breach, operational disruption, regulatory liability (GDPR Art.33/34, NIS2)."
     elif (( lat_count > 3 )); then
-        echo "Ransomware propagation risk — płaski model sieci umożliwia szyfrowanie wszystkich zasobów."
+        echo "Ransomware propagation risk — flat network enables encryption of all assets."
     elif [[ "$ad_det" == "1" ]]; then
-        echo "Kompromitacja Active Directory = utrata kontroli nad całą infrastrukturą Windows."
+        echo "Active Directory compromise = loss of control over entire Windows infrastructure."
     else
-        echo "Ograniczony zasięg ataku przy obecnym stanie zabezpieczeń."
+        echo "Limited attack scope given current security posture."
     fi
     echo "</p>"
 
-    # Natychmiastowe działania
+    # Immediate actions
     quick_n="${ROADMAP_QUICK[count]:-0}"
     if (( quick_n > 0 )); then
         echo "<p style='font-size:.82rem;color:#ef4444;margin-top:8px'>"
-        echo "<strong>⚡ Wymagane natychmiastowe działania (0-7 dni):</strong> ${quick_n} elementów — patrz sekcja Roadmap."
+        echo "<strong>⚡ Immediate actions required (0-7 days):</strong> ${quick_n} items — see Roadmap section."
         echo "</p>"
     fi
     )
@@ -7338,12 +5759,9 @@ footer{background:var(--s);border-top:1px solid var(--b);padding:16px 40px;text-
 </div>
 
 <div class="card">
-  <h3>Metodologia / Methodology</h3>
+  <h3>Methodology</h3>
   <p style="color:var(--m);font-size:.78rem;margin-top:6px">
-    <strong>PL:</strong> Wynik końcowy obliczany jako: <code>Ryzyko Rezydualne = Ryzyko Surowe (waga × podatność) − Mitigacje (wykryte mechanizmy obronne)</code>.
-    Faza behawioralna (Faza X) ocenia reaktywność sieci: mierzy zmiany latencji, eskalację obrony, deception, pamięć stanów i korelację między hostami.
-    <br><br>
-    <strong>EN:</strong> Final score computed as <code>Residual Risk = Raw Risk (weight × vulnerability) − Mitigations (detected defences)</code>.
+    Final score computed as <code>Residual Risk = Raw Risk (weight × vulnerability) − Mitigations (detected defences)</code>.
     Behavioural phase (Phase X) assesses network reactivity: measures latency shifts, defence escalation, deception layers, state memory, and cross-host correlation.
   </p>
 </div>
@@ -7353,7 +5771,7 @@ footer{background:var(--s);border-top:1px solid var(--b);padding:16px 40px;text-
 <!-- SEKCJA 1b: ATTACK PATH / KILL CHAIN                         -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="section" id="s1b">
-<h2>&#x26A1; Attack Path / Kill Chain <span class="en">Adversarial Scenario</span></h2>
+<h2>&#x26A1; Attack Path — Kill Chain</h2>
 
 $(
 chain="${ATTACK_PATH[chain_completeness]:-0}"
@@ -7370,7 +5788,7 @@ fi
 <tr style="background:rgba(255,255,255,.04)">
   <th style="padding:8px 10px;text-align:left;color:var(--m);border-bottom:1px solid var(--b)">Faza / Phase</th>
   <th style="padding:8px 10px;text-align:left;color:var(--m);border-bottom:1px solid var(--b)">MITRE ATT&amp;CK</th>
-  <th style="padding:8px 10px;text-align:left;color:var(--m);border-bottom:1px solid var(--b)">Wykryto / Detected</th>
+  <th style="padding:8px 10px;text-align:left;color:var(--m);border-bottom:1px solid var(--b)">Detected</th>
   <th style="padding:8px 10px;text-align:left;color:var(--m);border-bottom:1px solid var(--b)">Status</th>
 </tr>
 </thead>
@@ -7378,8 +5796,8 @@ fi
 $(
 render_chain_row() {
     local phase="$1" mitre="$2" data="$3"
-    local color="#22c55e" status="✓ Brak wskaźników"
-    [[ "$data" != "none detected" && "$data" != "none — good segmentation" ]] &&         color="#ef4444" && status="⚠ Wykryto"
+    local color="#22c55e" status="✓ No indicators"
+    [[ "$data" != "none detected" && "$data" != "none — good segmentation" ]] &&         color="#ef4444" && status="⚠ Detected"
     echo "<tr style='border-bottom:1px solid rgba(255,255,255,.05)'>"
     echo "  <td style='padding:8px 10px;font-weight:600'>$(html_esc "$phase")</td>"
     echo "  <td style='padding:8px 10px;color:#60a5fa;font-size:.75rem'>$(html_esc "$mitre")</td>"
@@ -7422,7 +5840,7 @@ fi
 <!-- SEKCJA 1c: REMEDIATION ROADMAP                             -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="section" id="s1c">
-<h2>&#x1F5FA; Remediation Roadmap <span class="en">Prioritised Action Plan</span></h2>
+<h2>&#x1F5FA; Remediation Roadmap — Prioritised Action Plan</h2>
 
 $(
 render_roadmap_section() {
@@ -7463,7 +5881,6 @@ render_roadmap_section() {
     echo "</div>"
 }
 
-# Zbierz items per kategoria
 quick_items=()
 for k in "${!ROADMAP_QUICK[@]}"; do
     [[ "$k" == "count" ]] && continue
@@ -7484,14 +5901,14 @@ render_roadmap_section     "Quick Wins — Natychmiastowe (0-7 dni)" "CVSS ≥9.
 
 render_roadmap_section     "Short-term — Krótkoterminowe (1-4 tygodnie)" "CVSS 7-8.9 / Konfiguracja i patching"     "#f97316" "🔧" "${short_items[@]}"
 
-render_roadmap_section     "Strategic — Strategiczne (3-6 miesięcy)" "Architektura / Zero Trust / Segmentacja"     "#3b82f6" "🏗" "${strat_items[@]}"
+render_roadmap_section     "Strategic (3-6 months)" "Architecture / Zero Trust / Segmentation"     "#3b82f6" "🏗" "${strat_items[@]}"
 
 quick_n="${ROADMAP_QUICK[count]:-0}"
 short_n="${ROADMAP_SHORT[count]:-0}"
 strat_n="${ROADMAP_STRATEGIC[count]:-0}"
 total_items=$(( quick_n + short_n + strat_n ))
 if (( total_items == 0 )); then
-    echo "<div class='card'><p style='color:#22c55e'>✓ Brak zidentyfikowanych elementów do naprawy.</p></div>"
+    echo "<div class='card'><p style='color:#22c55e'>✓ No remediation items identified.</p></div>"
 fi
 )
 
@@ -7501,7 +5918,7 @@ fi
 <!-- SEKCJA 1d: FAZA X — BEHAVIOURAL ANALYSIS                   -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="section" id="s1d">
-<h2>&#x1F9E0; Faza X — Analiza behawioralna <span class="en">Behavioural Defence Posture</span></h2>
+<h2>&#x1F9E0; Phase X — Behavioural Defence Posture</h2>
 
 <!-- KPI Fazy X -->
 <div class="kpi-grid" style="margin-bottom:16px">
@@ -7510,7 +5927,7 @@ ${s1d_kpi}
 
 <!-- Tabela per-host zones -->
 <div class="card">
-  <h3>&#x1F4CD; Mapa stref behawioralnych / Behavioural Zone Map</h3>
+  <h3>&#x1F4CD; Behavioural Zone Map</h3>
   <div style="overflow-x:auto;margin-top:10px">
   <table style="width:100%;border-collapse:collapse;font-size:.8rem">
   <thead>
@@ -7522,7 +5939,7 @@ ${s1d_kpi}
     <th style="padding:7px 10px;text-align:left;color:var(--m);border-bottom:1px solid var(--b)">Window</th>
     <th style="padding:7px 10px;text-align:left;color:var(--m);border-bottom:1px solid var(--b)">Ban N</th>
     <th style="padding:7px 10px;text-align:left;color:var(--m);border-bottom:1px solid var(--b)">Recovery</th>
-    <th style="padding:7px 10px;text-align:left;color:var(--m);border-bottom:1px solid var(--b)">Interpretacja</th>
+    <th style="padding:7px 10px;text-align:left;color:var(--m);border-bottom:1px solid var(--b)">Interpretation</th>
   </tr>
   </thead>
   <tbody>
@@ -7541,31 +5958,31 @@ ${s1d_host_cards}
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-top:10px;font-size:.78rem">
     <div style="padding:8px;border-radius:6px;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.2)">
       <strong style="color:#a78bfa">🎭 DECEPTION</strong>
-      <p style="color:var(--m);margin-top:4px">Deception / tarpit / fake listener. Wyniki audytu mogą być zafałszowane.</p>
+      <p style="color:var(--m);margin-top:4px">Deception / tarpit / fake listener. Audit results may be unreliable.</p>
     </div>
     <div style="padding:8px;border-radius:6px;background:rgba(96,165,250,.08);border:1px solid rgba(96,165,250,.2)">
       <strong style="color:#60a5fa">🔗 CORRELATED</strong>
-      <p style="color:var(--m);margin-top:4px">IDS/NDR/SIEM koreluje zdarzenia. Pełna widoczność footprintu audytora.</p>
+      <p style="color:var(--m);margin-top:4px">IDS/NDR/SIEM correlates events. Full auditor footprint visibility.</p>
     </div>
     <div style="padding:8px;border-radius:6px;background:rgba(249,115,22,.08);border:1px solid rgba(249,115,22,.2)">
       <strong style="color:#f97316">🧠 ADAPTIVE</strong>
-      <p style="color:var(--m);margin-top:4px">Reputacyjny blacklist z pamięcią. Blokada persists po cooldown.</p>
+      <p style="color:var(--m);margin-top:4px">Reputation blacklist with memory. Block persists after cooldown.</p>
     </div>
     <div style="padding:8px;border-radius:6px;background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.2)">
       <strong style="color:#eab308">📈 ESCALATING</strong>
-      <p style="color:var(--m);margin-top:4px">Rate-limiter z progiem N. Latencja rośnie po N próbach — ban trigger.</p>
+      <p style="color:var(--m);margin-top:4px">Rate-limiter z progiem N. Latencja rośnie po N probesach — ban trigger.</p>
     </div>
     <div style="padding:8px;border-radius:6px;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.2)">
       <strong style="color:#22c55e">⚡ REACTIVE</strong>
-      <p style="color:var(--m);margin-top:4px">Prosta ochrona bez persistent memory. Każda sesja oceniana od zera.</p>
+      <p style="color:var(--m);margin-top:4px">Simple protection without persistent memory. Each session evaluated from zero.</p>
     </div>
     <div style="padding:8px;border-radius:6px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2)">
       <strong style="color:#ef4444">⚠ EXPOSED</strong>
-      <p style="color:var(--m);margin-top:4px">Brak widocznej obrony dynamicznej. Wymaga wdrożenia fail2ban / IDS.</p>
+      <p style="color:var(--m);margin-top:4px">No visible dynamic defence. Requires fail2ban / IDS deployment.</p>
     </div>
     <div style="padding:8px;border-radius:6px;background:rgba(148,163,184,.08);border:1px solid rgba(148,163,184,.2)">
       <strong style="color:#94a3b8">🔇 SILENT</strong>
-      <p style="color:var(--m);margin-top:4px">DROP policy — brak odpowiedzi. Prawidłowe zachowanie stealth firewalla.</p>
+      <p style="color:var(--m);margin-top:4px">DROP policy — no response. Correct stealth firewall behaviour.</p>
     </div>
   </div>
 </div>
@@ -7576,11 +5993,11 @@ ${s1d_host_cards}
 <!-- SEKCJA 2: TOPOLOGIA I SYSTEMY OCHRONY                      -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="section" id="s2">
-<h2>2. Topologia i systemy ochrony <span class="en">Topology &amp; Defence Systems</span></h2>
+<h2>2. Topology &amp; Defence Systems</h2>
 
 <div class="card-grid">
   <div class="card">
-    <h3>🛡 Wykryte systemy obronne / Detected Defence Systems</h3>
+    <h3>🛡 Detected Defence Systems</h3>
     <ul style="list-style:none;margin-top:8px;font-size:.78rem">
       ${sec_list}
       ${pc_ids_li}
@@ -7589,21 +6006,21 @@ ${s1d_host_cards}
     </ul>
   </div>
   <div class="card">
-    <h3>🌐 Analiza łączy / Link Analysis</h3>
+    <h3>🌐 Link Analysis</h3>
     <table style="width:100%"><tbody>
       <tr><td style="color:var(--m)">WAN IP</td><td><code>$(html_esc "${TOPO[real_wan_ip]:-?}")</code></td></tr>
       <tr><td style="color:var(--m)">Gateway</td><td><code>$(html_esc "${TOPO[real_gateway]:-?}")</code></td></tr>
       <tr><td style="color:var(--m)">VPN / Tunnel</td><td>$(
         if [[ "${TOPO[vpn_detected]:-0}" == "1" ]]; then
           echo "<span style='color:#22c55e'>✓ $(html_esc "${TOPO[vpn_type]:-VPN}") — $(html_esc "${TOPO[vpn_interface]:-?}")</span>"
-        else echo "<span style='color:#eab308'>✗ Brak tunelu VPN</span>"; fi
+        else echo "<span style='color:#eab308'>✗ No VPN tunnel</span>"; fi
       )</td></tr>
       <tr><td style="color:var(--m)">NAT / Masquerade</td><td>$(
         if [[ "${TOPO[masquerade_active]:-0}" == "1" ]]; then
-          echo "<span style='color:#22c55e'>✓ MASQUERADE aktywna</span>"
+          echo "<span style='color:#22c55e'>✓ MASQUERADE active</span>"
         elif [[ "${TOPO[double_nat]:-0}" == "1" ]]; then
           echo "<span style='color:#f97316'>⚠ Double NAT (${TOPO[vpn_wan_ip]:-?})</span>"
-        else echo "<span style='color:#eab308'>? Nie wykryto / Not detected</span>"; fi
+        else echo "<span style='color:#eab308'>? Not detected</span>"; fi
       )</td></tr>
       <tr><td style="color:var(--m)">NAT layers</td><td>$(html_esc "${TOPO[nat_layers]:-1}")</td></tr>
       <tr><td style="color:var(--m)">Firewall type</td><td>$(html_esc "${TOPO[firewall_type]:-unknown}")</td></tr>
@@ -7632,7 +6049,7 @@ ${s1d_host_cards}
 <!-- SEKCJA 3: L2/L3 INFRASTRUKTURA                             -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="section" id="s3">
-<h2>3. Warstwa 2/3 — Infrastruktura <span class="en">L2/L3 Infrastructure</span></h2>
+<h2>3. L2/L3 Infrastructure</h2>
 
 <div class="card-grid">
   <div class="card">
@@ -7645,7 +6062,7 @@ ${s1d_host_cards}
     </tbody></table>
   </div>
   <div class="card">
-    <h3>🗺 Routing i segmentacja L3 / L3 Routing</h3>
+    <h3>🗺 L3 Routing &amp; Segmentation</h3>
     <table style="width:100%"><tbody>
       <tr><td style="color:var(--m)">East-West izolacja / Isolation</td>
         <td>${pc_ew_iso}</td></tr>
@@ -7662,7 +6079,7 @@ ${s1d_host_cards}
 <!-- SEKCJA 4: PROFIL HOSTÓW                                     -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="section" id="s4">
-<h2>4. Profilowanie hostów i ryzyka <span class="en">Host Profiling &amp; Risk</span></h2>
+<h2>4. Host Profiling &amp; Risk</h2>
 
 <div class="tbl-wrap">
 <table>
@@ -7672,17 +6089,17 @@ ${s1d_host_cards}
   <th>Behawioralny / Behavioural</th>
 </tr></thead>
 <tbody>
-${dev_rows:-<tr><td colspan="7" style="color:var(--m);text-align:center">Brak danych / No data</td></tr>}
+${dev_rows:-<tr><td colspan="7" style="color:var(--m);text-align:center">No data</td></tr>}
 </tbody>
 </table>
 </div>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- SEKCJA 5: USŁUGI I POLITYKI RUCHU                          -->
+<!-- SECTION 5: SERVICES AND TRAFFIC POLICY                          -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="section" id="s5">
-<h2>5. Audyt usług i polityk ruchu <span class="en">Services &amp; Traffic Policy Audit</span></h2>
+<h2>5. Services &amp; Traffic Policy Audit</h2>
 
 <div class="card-grid-3">
   <div class="card">
@@ -7692,9 +6109,9 @@ ${dev_rows:-<tr><td colspan="7" style="color:var(--m);text-align:center">Brak da
         <td>$(
           _dl="${TRAFFIC_POLICY[dns_leak]:-0}"
           _dlc="${TRAFFIC_POLICY[dns_leak_conf]:-0}"
-          if [[ "$_dl" == "1" ]]; then echo "<span style='color:#ef4444'>✗ WYCIEK (pewność ${_dlc}%)</span>"
+          if [[ "$_dl" == "1" ]]; then echo "<span style='color:#ef4444'>✗ LEAK (confidence ${_dlc}%)</span>"
           elif [[ "$_dl" == "PARTIAL" ]]; then echo "<span style='color:#f97316'>⚠ MOŻLIWY (${_dlc}%)</span>"
-          else echo "<span style='color:#22c55e'>✓ Brak / None</span>"; fi
+          else echo "<span style='color:#22c55e'>✓ None</span>"; fi
         )</td></tr>
       <tr><td style="color:var(--m)">DNS Controlled</td>
         <td>${pc_dns_ctrl_td}</td></tr>
@@ -7730,7 +6147,7 @@ ${dev_rows:-<tr><td colspan="7" style="color:var(--m);text-align:center">Brak da
 
 <div class="card-grid" style="margin-top:12px">
   <div class="card">
-    <h3>🛡 VPN &amp; NAT / Maskarada</h3>
+    <h3>🛡 VPN &amp; NAT / Masquerade</h3>
     <table style="width:100%"><tbody>
       <tr><td style="color:var(--m)">VPN Tunnel</td>
         <td>${vpn_display}</td></tr>
@@ -7764,17 +6181,13 @@ ${dev_rows:-<tr><td colspan="7" style="color:var(--m);text-align:center">Brak da
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- SEKCJA 6: BEHAVIOURAL RECON — FAZA X                       -->
+<!-- SECTION 6: BEHAVIOURAL RECON — PHASE X -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="section" id="s6">
-<h2>6. Behavioural Recon — Faza X <span class="en">Phase X — Behavioural Intelligence</span></h2>
+<h2>6. Phase X — Behavioural Intelligence</h2>
 
 <div class="infobox" style="margin-bottom:16px">
-  <strong>PL:</strong> Faza X to aktywna analiza behawioralna — nie skanowanie portów.
-  Silnik mierzy <em>jak sieć oddycha</em>: zmiany latencji, eskalację obrony, warstwy deception, pamięć stanów i korelację między hostami.
-  Wyniki nie zależą od znajomości konkretnych produktów (bez identyfikacji konkretnych produktów).
-  <br><br>
-  <strong>EN:</strong> Phase X is active behavioural analysis — not port scanning.
+  Phase X is active behavioural analysis — not port scanning.
   The engine measures <em>how the network breathes</em>: latency shifts, defence escalation, deception layers, state memory, and cross-host correlation.
   Results are product-agnostic — no knowledge of specific tools required.
 </div>
@@ -7783,7 +6196,7 @@ ${dev_rows:-<tr><td colspan="7" style="color:var(--m);text-align:center">Brak da
 <div class="bh-grid">
   <div class="bh-card">
     <div class="bv" style="color:${bh_threat_c}">$(html_esc "$bh_threat")<small style="font-size:.9rem">/100</small></div>
-    <div class="bl">Threat Level / Poziom zagrożenia</div>
+    <div class="bl">Threat Level</div>
   </div>
   <div class="bh-card">
     <div class="bv" style="color:#f97316">$(html_esc "$bh_corr")<small style="font-size:.9rem">/100</small></div>
@@ -7810,17 +6223,17 @@ ${dev_rows:-<tr><td colspan="7" style="color:var(--m);text-align:center">Brak da
 </div>
 
 <!-- Mapa behawioralna -->
-<h3 style="margin-bottom:10px">🗺 Mapa behawioralna hostów / Behavioural Host Map</h3>
+<h3 style="margin-bottom:10px">🗺 Behavioural Host Map</h3>
 <div class="tbl-wrap">
 <table>
 <thead><tr>
   <th>IP</th><th>Strefa / Zone</th><th>Confidence</th>
   <th>Metryki / Metrics (RS AI DP CL)</th>
-  <th>Sygnały deception / Deception signals</th>
-  <th>Pamięć / Memory</th>
+  <th>Deception signals</th>
+  <th>Memory</th>
 </tr></thead>
 <tbody>
-${bmap_rows:-<tr><td colspan="6" style="color:var(--m);text-align:center">Brak danych — faza X nie uruchomiona / Phase X not run</td></tr>}
+${bmap_rows:-<tr><td colspan="6" style="color:var(--m);text-align:center">No data — Phase X not run</td></tr>}
 </tbody>
 </table>
 </div>
@@ -7830,11 +6243,11 @@ ${bmap_rows:-<tr><td colspan="6" style="color:var(--m);text-align:center">Brak d
   <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:.72rem">
     <span><span class="zone" style="background:rgba(239,68,68,.15);color:#ef4444">DECEPTION</span> Honeypot/tarpit/mirage</span>
     <span><span class="zone" style="background:rgba(249,115,22,.15);color:#f97316">CORRELATED</span> IDS/SIEM koreluje zdarzenia</span>
-    <span><span class="zone" style="background:rgba(249,115,22,.15);color:#f97316">ADAPTIVE</span> Obrona z pamięcią stanów</span>
-    <span><span class="zone" style="background:rgba(234,179,8,.15);color:#eab308">ESCALATING</span> Latencja rośnie z próbami</span>
-    <span><span class="zone" style="background:rgba(59,130,246,.15);color:#3b82f6">REACTIVE</span> Reaguje, nie zapamiętuje</span>
-    <span><span class="zone" style="background:rgba(234,179,8,.15);color:#eab308">EXPOSED</span> Otwarty bez obrony</span>
-    <span><span class="zone" style="background:rgba(34,197,94,.15);color:#22c55e">SILENT</span> Brak reakcji (głęboki DROP)</span>
+    <span><span class="zone" style="background:rgba(249,115,22,.15);color:#f97316">ADAPTIVE</span> Defence with state memory</span>
+    <span><span class="zone" style="background:rgba(234,179,8,.15);color:#eab308">ESCALATING</span> Latency increases with probes</span>
+    <span><span class="zone" style="background:rgba(59,130,246,.15);color:#3b82f6">REACTIVE</span> Reacts, does not remember</span>
+    <span><span class="zone" style="background:rgba(234,179,8,.15);color:#eab308">EXPOSED</span> Exposed without defence</span>
+    <span><span class="zone" style="background:rgba(34,197,94,.15);color:#22c55e">SILENT</span> No response (deep DROP)</span>
   </div>
   <p style="margin-top:10px;font-size:.72rem;color:var(--m)">
     <strong>RS</strong> = Reactivity Score &nbsp;|&nbsp;
@@ -7849,9 +6262,9 @@ ${bmap_rows:-<tr><td colspan="6" style="color:var(--m);text-align:center">Brak d
 <!-- SEKCJA 7: FINDINGS I REKOMENDACJE                          -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="section" id="s7">
-<h2>7. Znaleziska i rekomendacje <span class="en">Findings &amp; Remediation</span></h2>
+<h2>7. Findings &amp; Remediation</h2>
 
-<h3 style="margin-bottom:8px">Znaleziska sieciowe / Network-level Findings</h3>
+<h3 style="margin-bottom:8px">Network-level Findings</h3>
 <div class="tbl-wrap">
 <table>
 <thead><tr>
@@ -7859,12 +6272,12 @@ ${bmap_rows:-<tr><td colspan="6" style="color:var(--m);text-align:center">Brak d
   <th>Opis / Description</th><th>Rekomendacja / Recommendation</th>
 </tr></thead>
 <tbody>
-${net_rows:-<tr><td colspan="4" style="color:var(--m);text-align:center">Brak znalezisk sieciowych / No network findings</td></tr>}
+${net_rows:-<tr><td colspan="4" style="color:var(--m);text-align:center">No network findings</td></tr>}
 </tbody>
 </table>
 </div>
 
-<h3 style="margin-top:20px;margin-bottom:8px">Znaleziska per host / Per-host Findings</h3>
+<h3 style="margin-top:20px;margin-bottom:8px">Per-host Findings</h3>
 <div class="tbl-wrap">
 <table>
 <thead><tr>
@@ -7872,7 +6285,7 @@ ${net_rows:-<tr><td colspan="4" style="color:var(--m);text-align:center">Brak zn
   <th>Opis / Description</th><th>Rekomendacja / Remediation</th>
 </tr></thead>
 <tbody>
-${find_rows:-<tr><td colspan="5" style="color:var(--m);text-align:center">Brak znalezisk / No findings</td></tr>}
+${find_rows:-<tr><td colspan="5" style="color:var(--m);text-align:center">No findings</td></tr>}
 </tbody>
 </table>
 </div>
@@ -7882,13 +6295,12 @@ ${find_rows:-<tr><td colspan="5" style="color:var(--m);text-align:center">Brak z
 <!-- SEKCJA 8: COMPLIANCE                                        -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="section" id="s8">
-<h2>8. Zgodność / Compliance <span class="en">CIS · ISO 27001 · NIST · GDPR</span></h2>
+<h2>8. Compliance — CIS · ISO 27001 · NIST · GDPR</h2>
 
 <div class="infobox" style="margin-bottom:14px">
-  <strong>PL:</strong> Macierz mapowania wyników do standardów branżowych.
-  Status PASS = kontrola spełniona, FAIL = niezgodność, N/A = nie zbadano.
+  PASS = control met, FAIL = non-compliance, N/A = not tested.
   <br>
-  <strong>EN:</strong> Mapping of audit results to industry standards.
+  Mapping of audit results to industry standards.
   PASS = control satisfied, FAIL = non-compliance, N/A = not assessed.
 </div>
 
@@ -7898,25 +6310,25 @@ ${find_rows:-<tr><td colspan="5" style="color:var(--m);text-align:center">Brak z
   <th>Host</th><th>Standard / Control</th><th>Status</th><th>Odniesienie / Reference</th>
 </tr></thead>
 <tbody>
-${comp_rows:-<tr><td colspan="4" style="color:var(--m);text-align:center">Brak danych compliance / No compliance data</td></tr>}
+${comp_rows:-<tr><td colspan="4" style="color:var(--m);text-align:center">No compliance data</td></tr>}
 </tbody>
 </table>
 </div>
 
-<!-- Compliance ogólna -->
+<!-- Compliance overview -->
 <div class="card" style="margin-top:14px">
-  <h3>Globalne wskaźniki zgodności / Global Compliance Indicators</h3>
+  <h3>Global Compliance Indicators</h3>
   <div class="card-grid" style="margin-top:10px">
     <div>
       <p style="font-size:.78rem;color:var(--m);margin-bottom:6px"><strong>CIS Controls v8</strong></p>
-      <p style="font-size:.78rem">Segmentacja sieci: ${pc_cis12}</p>
+      <p style="font-size:.78rem">Network Segmentation: ${pc_cis12}</p>
       <p style="font-size:.78rem">Filtrowanie DNS: ${pc_cis9}</p>
       <p style="font-size:.78rem">Monitoring sieciowy: ${pc_cis13}</p>
     </div>
     <div>
       <p style="font-size:.78rem;color:var(--m);margin-bottom:6px"><strong>ISO 27001 / NIST CSF</strong></p>
-      <p style="font-size:.78rem">Kontrola dostępu: ${pc_iso_ac}</p>
-      <p style="font-size:.78rem">Ochrona danych: ${pc_iso_ds}</p>
+      <p style="font-size:.78rem">Access control: ${pc_iso_ac}</p>
+      <p style="font-size:.78rem">Data protection: ${pc_iso_ds}</p>
       <p style="font-size:.78rem">RODO/GDPR egress: ${pc_gdpr}</p>
     </div>
   </div>
@@ -7925,7 +6337,7 @@ ${comp_rows:-<tr><td colspan="4" style="color:var(--m);text-align:center">Brak d
 <!-- AWS/Fleet opcjonalnie -->
 $( [[ "${TOPO[fleet_detected]:-0}" == "1" || "${PROWLER_RESULT[scan_started]:-0}" == "1" ]] && cat <<OPTEOF
 <div class="card" style="margin-top:14px">
-  <h3>☁ Audyt chmury i zarządzania / Cloud &amp; Management Audit</h3>
+  <h3>☁ Cloud &amp; Management Audit</h3>
   <table style="width:100%"><tbody>
     <tr><td style="color:var(--m)">Fleet (Osquery)</td><td>${pc_fleet}</td></tr>
     <tr><td style="color:var(--m)">AWS Prowler</td><td>${pc_prowler}</td></tr>
@@ -7941,7 +6353,7 @@ OPTEOF
   EWNAF v${VERSION} — Enterprise Network Audit Framework &nbsp;|&nbsp;
   Wygenerowano / Generated: $(date '+%Y-%m-%d %H:%M:%S') &nbsp;|&nbsp;
   Klient / Client: $(html_esc "${CLIENT_NAME}") &nbsp;|&nbsp;
-  © Raport behawioralny klasy enterprise / Enterprise behavioural audit report
+  © Enterprise behavioural audit report
 </footer>
 
 </body>
@@ -7951,10 +6363,6 @@ HTMLEOF
 
     log "HTML gotowy: $HTML_REPORT ($(wc -l < "$HTML_REPORT") linii)"
 }
-
-###############################################################################
-# PDF REPORT — BILINGUAL — FULLCOLOR — 8 SECTIONS
-###############################################################################
 
 export_pdf() {
     [[ -z "${REPORT_PDF:-}" ]] && return
@@ -7973,13 +6381,12 @@ export_pdf() {
     (( maturity >= 60 )) && tier="Tier 2"
     (( maturity >= 80 )) && tier="Tier 1"
 
-    local verdict_pl="Krytyczne zagrożenie" verdict_en="Critical Threat"
-    (( gs >= 30 )) && { verdict_pl="Wysokie ryzyko";     verdict_en="High Risk"; }
-    (( gs >= 50 )) && { verdict_pl="Umiarkowane ryzyko"; verdict_en="Moderate Risk"; }
-    (( gs >= 70 )) && { verdict_pl="Dobry poziom";       verdict_en="Good Security Posture"; }
-    (( gs >= 85 )) && { verdict_pl="Wzorowy poziom";     verdict_en="Exemplary Security"; }
+    local verdict_detail="Critical Threat" verdict_en="Critical Threat"
+    (( gs >= 30 )) && { verdict_detail="Wysokie ryzyko";     verdict_en="High Risk"; }
+    (( gs >= 50 )) && { verdict_detail="Umiarkowane ryzyko"; verdict_en="Moderate Risk"; }
+    (( gs >= 70 )) && { verdict_detail="Dobry poziom";       verdict_en="Good Security Posture"; }
+    (( gs >= 85 )) && { verdict_detail="Wzorowy poziom";     verdict_en="Exemplary Security"; }
 
-    # Zbierz dane behawioralne
     local bh_data=""
     for ip in "${!BMAP[@]}"; do
         local zone="${BMAP[$ip]}"
@@ -7991,7 +6398,6 @@ export_pdf() {
         bh_data+="$(_entity_alias "$ip" "Node")|${zone}|${rs}|${dp}|${cl}|$(_anonymize_text "${sigs}")|${ret}\n"
     done
 
-    # Zbierz findings
     local findings_net=""
     for finding in "${NET_FINDINGS[@]:-}"; do
         [[ -z "$finding" ]] && continue
@@ -8019,7 +6425,7 @@ try:
                                      TableStyle, PageBreak, HRFlowable, KeepTogether)
     from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
 except ImportError:
-    print("ReportLab brak — instaluję...")
+    print("ReportLab missing — installing...")
     os.system("pip install reportlab -q --break-system-packages 2>/dev/null || pip3 install reportlab -q 2>/dev/null")
     try:
         from reportlab.lib.pagesizes import A4
@@ -8030,7 +6436,7 @@ except ImportError:
                                          TableStyle, PageBreak, HRFlowable, KeepTogether)
         from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
     except:
-        print("ReportLab niedostępny — PDF pominięty")
+        print("ReportLab unavailable — PDF skipped")
         sys.exit(0)
 
 # ── KOLORY ──────────────────────────────────────────────────────
@@ -8140,9 +6546,6 @@ doc = SimpleDocTemplate(
 
 story = []
 
-# ══════════════════════════════════════════════════════════════════
-# STRONA TYTUŁOWA
-# ══════════════════════════════════════════════════════════════════
 story.append(Spacer(1, 3*cm))
 story.append(Paragraph("EWNAF v${VERSION}", sH1))
 story.append(Paragraph("Enterprise Network Audit Framework", S('Normal', fontSize=13, textColor=C_GRAY, fontName='Helvetica', leading=16)))
@@ -8152,7 +6555,7 @@ story.append(Spacer(1, 0.8*cm))
 score_data = [
     [Paragraph(f'<font size="36" color="#{sc.hexval()[2:] if hasattr(sc,"hexval") else "60a5fa"}">{gs}</font>', S('Normal', fontName='Helvetica-Bold', fontSize=36, textColor=sc, leading=40, alignment=TA_CENTER)),
      Paragraph(f'<font size="36" color="#{sc.hexval()[2:] if hasattr(sc,"hexval") else "60a5fa"}">${grade}</font>', S('Normal', fontName='Helvetica-Bold', fontSize=36, textColor=sc, leading=40, alignment=TA_CENTER)),
-     Paragraph(f'<font size="14">${tier}</font><br/><font size="8" color="#94a3b8">${verdict_pl}<br/>${verdict_en}</font>', S('Normal', fontName='Helvetica-Bold', fontSize=14, textColor=sc, leading=18, alignment=TA_CENTER))],
+     Paragraph(f'<font size="14">${tier}</font><br/><font size="8" color="#94a3b8">${verdict_detail}<br/>${verdict_en}</font>', S('Normal', fontName='Helvetica-Bold', fontSize=14, textColor=sc, leading=18, alignment=TA_CENTER))],
     [Paragraph("Global Score", sCaption), Paragraph("Grade", sCaption), Paragraph("Cybersecurity Tier / Werdykt", sCaption)]
 ]
 t = Table(score_data, colWidths=[4.5*cm, 4.5*cm, 8*cm])
@@ -8192,21 +6595,19 @@ mt.setStyle(TableStyle([
 story.append(mt)
 story.append(PageBreak())
 
-# ══════════════════════════════════════════════════════════════════
 # SEKCJA 1: EXECUTIVE SUMMARY
-# ══════════════════════════════════════════════════════════════════
-story.append(Paragraph("1. Podsumowanie menedżerskie / Executive Summary", sH2))
+story.append(Paragraph("1. Executive Summary", sH2))
 story.append(HRFlowable(width="100%", thickness=0.5, color=C_BORDER))
 story.append(Spacer(1, 0.2*cm))
 
 story.append(Paragraph(
-    "<b>PL:</b> Wynik końcowy obliczany jako Ryzyko Rezydualne = Ryzyko Surowe − Mitigacje. "
-    "Faza behawioralna (Faza X) ocenia dynamikę obrony sieci: mierzy zmiany latencji, "
-    "eskalację, warstwy deception i korelację między hostami. Wyniki są niezależne od "
-    "konkretnych produktów bezpieczeństwa.",
+    ""Final score is computed as Residual Risk = Raw Risk − Mitigations. 
+   Behavioural phase (Phase X) evaluates defence dynamics: latency shifts, 
+   escalation, deception layers, and cross-host correlation. Results remain independent of 
+   specific security products.",
     sBilingual))
 story.append(Paragraph(
-    "<b>EN:</b> Final score = Raw Risk − Mitigations. Phase X assesses network defence dynamics: "
+    "Phase X assesses network defence dynamics: "
     "latency shifts, escalation, deception layers, state memory, and cross-host correlation. "
     "Results are product-agnostic.",
     sBilingual))
@@ -8234,20 +6635,18 @@ kt.setStyle(TableStyle([
 story.append(kt)
 story.append(PageBreak())
 
-# ══════════════════════════════════════════════════════════════════
-# SEKCJA 6: BEHAVIOURAL RECON (Faza X) — przed findings bo to serce
-# ══════════════════════════════════════════════════════════════════
-story.append(Paragraph("6. Behavioural Recon — Faza X / Phase X", sH2))
+# SECTION 6: BEHAVIOURAL RECON (Phase X)
+story.append(Paragraph("6. Behavioural Recon — Phase X", sH2))
 story.append(HRFlowable(width="100%", thickness=0.5, color=C_BORDER))
 story.append(Spacer(1, 0.2*cm))
 
 story.append(Paragraph(
-    "<b>PL:</b> Silnik behawioralny nie skanuje portów. Mierzy jak sieć oddycha: "
-    "zmiana latencji po burście, eskalacja obrony, tarpit, honeypot, korelacja między hostami, "
-    "pamięć stanów po 45-180 sekundach. Wynik niezależny od konkretnych produktów.",
+    "Behavioural engine does not scan ports. It measures how the network breathes: "
+    "latency shift after burst, defence escalation, tarpit, honeypot, and cross-host correlation, "
+    "state memory after 45-180 second intervals. Output is product-agnostic.",
     sBilingual))
 story.append(Paragraph(
-    "<b>EN:</b> Behavioural engine does not scan ports. It measures how the network breathes: "
+    "It measures how the network breathes: "
     "latency shift after burst, defence escalation, tarpit, honeypot, cross-host correlation, "
     "state memory after 45-180 second intervals. Product-agnostic output.",
     sBilingual))
@@ -8255,25 +6654,25 @@ story.append(Spacer(1, 0.3*cm))
 
 # Session state panel
 sess_data = [
-    ['Metryka / Metric', 'Wartość / Value', 'Interpretacja / Interpretation'],
-    ['Threat Level', str(bh_threat), 'Poziom eskalacji obronnej w sesji / Defence escalation level'],
-    ['Correlation Score', str(bh_corr), 'Korelacja zdarzeń między hostami / Cross-host event correlation'],
-    ['Adaptation Detected', 'TAK/YES' if bh_adapt == '1' else 'NIE/NO', 'Obrona zmieniła zachowanie w trakcie sesji / Defence adapted during session'],
-    ['Cross-Host Shifts', '${SESSION_STATE[cross_host_latency_shift]:-0}', 'Liczba przypadków zmiany latencji host A po próbie host B'],
-    ['Hosts Reactive', '${SESSION_STATE[hosts_reactive]:-0}', 'Hosty które zmieniły zachowanie po bodźcu'],
-    ['Hosts Deceptive', '${SESSION_STATE[hosts_deceptive]:-0}', 'Hosty z warstwą deception (fake listener / tarpit / pozorne odpowiedzi)'],
+    ['Metric', 'Value', 'Interpretation'],
+    ['Threat Level', str(bh_threat), 'Defence escalation level'],
+    ['Correlation Score', str(bh_corr), 'Cross-host event correlation'],
+    ['Adaptation Detected', 'YES' if bh_adapt == '1' else 'NO', 'Defence adapted during session'],
+    ['Cross-Host Shifts', '${SESSION_STATE[cross_host_latency_shift]:-0}', 'Cross-host latency shift count'],
+    ['Hosts Reactive', '${SESSION_STATE[hosts_reactive]:-0}', 'Hosts that changed behaviour after stimulus'],
+    ['Hosts Deceptive', '${SESSION_STATE[hosts_deceptive]:-0}', 'Hosts with deception layer (fake listener / tarpit / shaped responses)'],
 ]
 st = Table(sess_data, colWidths=[4*cm, 3*cm, 11*cm])
 st.setStyle(tbl_style())
 story.append(st)
 story.append(Spacer(1, 0.4*cm))
 
-# Mapa behawioralna
+# Behavioural map
 bh_raw = """${bh_data}"""
 bh_lines = [l for l in bh_raw.strip().split('\\n') if l.strip() and '|' in l]
 if bh_lines:
-    story.append(Paragraph("Mapa behawioralna hostów / Behavioural Host Map", sH3))
-    bmap_data = [['Entity', 'Zone', 'RS', 'DP', 'CL', 'Sygnały / Signals', 'Pamięć / Memory']]
+    story.append(Paragraph("Behavioural Host Map", sH3))
+    bmap_data = [['Entity', 'Zone', 'RS', 'DP', 'CL', 'Signals', 'Memory']]
     for line in bh_lines:
         parts = line.split('|')
         if len(parts) >= 7:
@@ -8290,10 +6689,8 @@ if bh_lines:
     story.append(bt)
 story.append(PageBreak())
 
-# ══════════════════════════════════════════════════════════════════
 # SEKCJA 7: FINDINGS
-# ══════════════════════════════════════════════════════════════════
-story.append(Paragraph("7. Znaleziska i rekomendacje / Findings & Remediation", sH2))
+story.append(Paragraph("7. Findings & Remediation", sH2))
 story.append(HRFlowable(width="100%", thickness=0.5, color=C_BORDER))
 story.append(Spacer(1, 0.2*cm))
 
@@ -8319,13 +6716,11 @@ if find_lines:
     ft.setStyle(tbl_style())
     story.append(ft)
 else:
-    story.append(Paragraph("Brak znalezisk sieciowych / No network findings", sSmall))
+    story.append(Paragraph("No network findings", sSmall))
 story.append(PageBreak())
 
-# ══════════════════════════════════════════════════════════════════
 # SEKCJA 8: COMPLIANCE
-# ══════════════════════════════════════════════════════════════════
-story.append(Paragraph("8. Zgodność / Compliance  ·  CIS · ISO 27001 · NIST · GDPR", sH2))
+story.append(Paragraph("8. Compliance  ·  CIS · ISO 27001 · NIST · GDPR", sH2))
 story.append(HRFlowable(width="100%", thickness=0.5, color=C_BORDER))
 story.append(Spacer(1, 0.2*cm))
 
@@ -8344,13 +6739,13 @@ def pass_fail(val, invert=False):
 comp_data = [
     ['Standard', 'Kontrola / Control', 'Status', 'Odniesienie / Reference'],
     ['CIS v8 CIS-9',  'DNS Filtering aktywny',           *pass_fail(dns_cis),  'CIS Control 9.2'],
-    ['CIS v8 CIS-12', 'Segmentacja sieci East-West',     *pass_fail(l3_iso),   'CIS Control 12.2'],
+    ['CIS v8 CIS-12', 'East-West Network Segmentation',     *pass_fail(l3_iso),   'CIS Control 12.2'],
     ['CIS v8 CIS-13', 'Network monitoring / IDS active', *pass_fail(ids_cis),  'CIS Control 13.3'],
-    ['ISO 27001 A.9', 'Kontrola dostępu sieciowego',     *pass_fail(cross, invert=True), 'A.9.4.2'],
-    ['ISO 27001 A.10','Ochrona TLS (brak intercept)',     *pass_fail(tls_ok, invert=True), 'A.10.1.1'],
+    ['ISO 27001 A.9', 'Network access control',     *pass_fail(cross, invert=True), 'A.9.4.2'],
+    ['ISO 27001 A.10','TLS protection (no intercept)',     *pass_fail(tls_ok, invert=True), 'A.10.1.1'],
     ['NIST PR.AC',    'Privilege management / segm.',    *pass_fail(l3_iso),   'PR.AC-4'],
     ['NIST PR.DS',    'Data-in-transit encryption',      *pass_fail(tls_ok, invert=True), 'PR.DS-2'],
-    ['GDPR Art. 32',  'Brak wycieku DNS / DNS leak',     *pass_fail(dns_lk, invert=True), 'Art. 32 RODO'],
+    ['GDPR Art. 32',  'DNS leak control',     *pass_fail(dns_lk, invert=True), 'GDPR Art. 32'],
 ]
 ct = Table(comp_data, colWidths=[4*cm, 6*cm, 2*cm, 5.5*cm])
 cstyle = tbl_style()
@@ -8363,8 +6758,8 @@ story.append(ct)
 
 story.append(Spacer(1, 0.5*cm))
 story.append(Paragraph(
-    "Macierz oparta na wynikach aktywnych testów behawioralnych i topologicznych. "
-    "Status N/A oznacza brak wystarczających danych do oceny. "
+    "Matrix based on results of active behavioural and topological tests. "
+    "Status N/A indicates insufficient data for assessment. "
     "/ Matrix based on active behavioural and topology test results. "
     "N/A status indicates insufficient data for assessment.",
     sCaption))
@@ -8374,57 +6769,45 @@ print("PDF OK")
 PYSCRIPT
     local rc=$?
     if (( rc != 0 )) || [[ ! -s "$REPORT_PDF" ]]; then
-        log "PDF render failed; raport PDF pominięty w tym środowisku." "WARN"
+        log "PDF render failed; PDF report skipped in this environment." "WARN"
         return 1
     fi
     log "PDF gotowy: $REPORT_PDF" "OK"
 }
 
-###############################################################################
-# GLOBALNY STAN SESJI — PAMIEC MIEDZY HOSTAMI
-# Nie resetuje sie dla każdego hosta — rośnie przez cały czas trwania audytu.
-###############################################################################
-
 declare -A SESSION_STATE=(
-    [threat_level]=0           # 0-100: rośnie gdy sieć reaguje agresywnie
-    [correlation_score]=0      # 0-100: czy zdarzenia sa powiazane miedzy hostami
-    [deception_score]=0        # 0-100: globalny wskaznik warstwy deception
-    [adaptation_detected]=0    # 0/1: czy obrona zmienila zachowanie w trakcie sesji
-    [escalation_threshold]=0   # ile prob zanim obrona reaguje — ustalany empirycznie
-    [noise_floor]=0            # bazowa latencja sieci (ustalana w pierwszych 10 probach)
-    [hosts_probed]=0           # ile hostow juz zbadano
-    [hosts_reactive]=0         # ile hostow zmienilo zachowanie
-    [hosts_deceptive]=0        # ile hostow wykazuje deception
-    [cross_host_latency_shift]=0  # czy badanie hosta A zmienilo latencje hosta B?
-    [current_jitter_ms]=300    # aktualny jitter — adaptuje sie do srodowiska
-    [current_burst_size]=5     # aktualny burst — maleje gdy siec eskaluje
-    [probe_speed]=NORMAL       # SLOW / NORMAL / FAST — adaptuje sie
-    [session_paused]=0         # 1 = silnik sie schował (czeka na reset strażnika)
-    [pause_until]=0            # timestamp do kiedy pauzujemy
-    [total_probes]=0           # sumaryczna liczba prob w sesji
-    [return_targets]=""        # hosty do ponownego odwiedzenia (powrot do miejsca)
-    [phase_x_done]=0           # czy faza X juz uruchomiona
-    [heat]=0                   # aktywna intensywność (0-100) — decay w czasie
-    [heat_last_probe_ts]=0     # timestamp ostatniej próby
-    [heat_decay_rate]=5        # punkty heat które spadają co 30s bez prób
-    [rate_gov_window]=0        # timestamp okna rate governor
-    [rate_gov_count]=0         # ile prób w oknie (max 10/30s)
+    [threat_level]=0
+    [correlation_score]=0
+    [deception_score]=0
+    [adaptation_detected]=0
+    [escalation_threshold]=0
+    [noise_floor]=0
+    [hosts_probed]=0
+    [hosts_reactive]=0
+    [hosts_deceptive]=0
+    [cross_host_latency_shift]=0
+    [current_jitter_ms]=300
+    [current_burst_size]=5
+    [probe_speed]=NORMAL
+    [session_paused]=0
+    [pause_until]=0
+    [total_probes]=0
+    [return_targets]=""
+    [phase_x_done]=0
+    [heat]=0
+    [heat_last_probe_ts]=0
+    [heat_decay_rate]=5
+    [rate_gov_window]=0
+    [rate_gov_count]=0
 )
 
-# Pamiec behawioralna miedzy hostami — "co zmieniło sie po badaniu X?"
 declare -A GLOBAL_BEHAVIOR_MEMORY=()
-# Klucze: "hostA:port:before" "hostA:port:after_probe_hostB"
 
-# Historia prób — timeline
 declare -a PROBE_TIMELINE=()
-
-# ADAPTACYJNY SCHEDULER — SERCE SYSTEMU
-# Nie decyduje co zbadac. Decyduje JAK i KIEDY.
 
 _sched_update_threat() {
     local delta="${1:-0}"
     local new
-    # delta=0: tylko przelicz prędkość, nie zmieniaj threat_level
     if (( delta != 0 )); then
         new=$(( SESSION_STATE[threat_level] + delta ))
         (( new > 100 )) && new=100
@@ -8434,8 +6817,6 @@ _sched_update_threat() {
         new=${SESSION_STATE[threat_level]}
     fi
 
-    # Adaptacja prędkości: max(threat_level, heat) decyduje o prędkości
-    # heat > threat oznacza: niedawno robiłeś dużo prób — zwolnij nawet jeśli threat niski
     _sched_heat_decay
     local heat="${SESSION_STATE[heat]:-0}"
     local intensity=$(( new > heat ? new : heat ))
@@ -8469,10 +6850,10 @@ _sched_should_pause() {
     local now; now=$(_bh_ts_s)
     if (( SESSION_STATE[session_paused] == 1 )); then
         if (( now < SESSION_STATE[pause_until] )); then
-            return 0   # nadal pausujemy
+            return 0
         else
             SESSION_STATE[session_paused]=0
-            _bh_log "SCHEDULER: pauza skonczona — wznawiam eksploracje"
+            _bh_log "SCHEDULER: pause skonczona — wznawiam eksploracje"
             return 1
         fi
     fi
@@ -8490,10 +6871,8 @@ _sched_pause() {
 }
 
 _sched_heat_add() {
-    # Dodaj punkty heat po każdej próbie
     local delta="${1:-5}"
     local now; now=$(_bh_ts_s)
-    # Najpierw decay: za każde 30s bez próby odejmij heat_decay_rate punktów
     local last="${SESSION_STATE[heat_last_probe_ts]:-0}"
     if (( last > 0 && now > last )); then
         local elapsed=$(( now - last ))
@@ -8510,7 +6889,6 @@ _sched_heat_add() {
 }
 
 _sched_heat_decay() {
-    # Wywołaj bez próby — tylko decay
     local now; now=$(_bh_ts_s)
     local last="${SESSION_STATE[heat_last_probe_ts]:-0}"
     (( last == 0 )) && SESSION_STATE[heat_last_probe_ts]=$now && return
@@ -8525,13 +6903,11 @@ _sched_heat_decay() {
 }
 
 _sched_rate_ok() {
-    # Rate governor: max 10 prób / 30s okno. Zwraca 0 jeśli można, 1 jeśli trzeba czekać.
     local now; now=$(_bh_ts_s)
     local win="${SESSION_STATE[rate_gov_window]:-0}"
     local cnt="${SESSION_STATE[rate_gov_count]:-0}"
 
     if (( now - win >= 30 )); then
-        # Nowe okno
         SESSION_STATE[rate_gov_window]=$now
         SESSION_STATE[rate_gov_count]=1
         return 0
@@ -8542,10 +6918,9 @@ _sched_rate_ok() {
         return 0
     fi
 
-    # Przekroczono limit — czekaj
     local wait_s=$(( 30 - (now - win) ))
     (( wait_s < 1 )) && wait_s=1
-    _bh_log "RATE GOVERNOR: limit 10/30s przekroczony — pauza ${wait_s}s (heat=${SESSION_STATE[heat]})"
+    _bh_log "RATE GOVERNOR: limit 10/30s exceeded — pause ${wait_s}s (heat=${SESSION_STATE[heat]})"
     sleep "$wait_s"
     SESSION_STATE[rate_gov_window]=$(_bh_ts_s)
     SESSION_STATE[rate_gov_count]=1
@@ -8559,9 +6934,6 @@ _sched_mark_for_return() {
     _bh_log "SCHEDULER: ${ip} oznaczony do powrotu (${reason})"
 }
 
-# CROSS-HOST MEMORY — CZY HOST B ZMIENIL SIE PO PROBIE HOSTA A?
-# To wykrywa centralny system korelacji (SIEM, NDR, centralny firewall).
-
 _mem_snapshot() {
     local ip="$1" port="$2" label="$3"
     local raw ms state
@@ -8574,11 +6946,8 @@ _mem_snapshot() {
 
 _mem_compare_cross() {
     local ref_ip="$1" probe_ip="$2" port="${3:-80}"
-    # Snapshot ref_ip przed badaniem probe_ip
     _mem_snapshot "$ref_ip" "$port" "before_${probe_ip//\./_}"
 
-    # Tutaj wywolujacy zbada probe_ip
-    # Po powrocie:
     _mem_snapshot "$ref_ip" "$port" "after_${probe_ip//\./_}"
 
     local before="${GLOBAL_BEHAVIOR_MEMORY["${ref_ip}:${port}:before_${probe_ip//\./_}"]}"
@@ -8590,10 +6959,8 @@ _mem_compare_cross() {
     local delta=$(( ms_a - ms_b ))
     (( delta < 0 )) && delta=$(( -delta ))
 
-    # Jesli latencja hosta A zmieniła sie o >200ms po badaniu hosta B
-    # → mamy centralny system korelacji
     if (( delta > 200 )); then
-        _bh_log "CROSS-HOST CORRELATION: ${ref_ip} zmienił latencje o ${delta}ms po probie ${probe_ip}"
+        _bh_log "CROSS-HOST CORRELATION: ${ref_ip} shifted latency by ${delta}ms after probing ${probe_ip}"
         (( SESSION_STATE[correlation_score] += 20 ))
         (( SESSION_STATE[cross_host_latency_shift]++ ))
         SESSION_STATE[adaptation_detected]=1
@@ -8603,26 +6970,21 @@ _mem_compare_cross() {
     return 1
 }
 
-# POWROT DO MIEJSCA ZBRODNI
-
 _return_visit() {
     local ip="$1"
     local wait_s="${2:-45}"
 
     _bh_log "RETURN VISIT: ${ip} — czekam ${wait_s}s przed powrotem"
 
-    # Losowy czas oczekiwania (30-180s) — nieregularny powrót
     local actual_wait=$(( wait_s + (RANDOM % 60) ))
     sleep "$actual_wait"
 
     _bh_log "RETURN: badamy ${ip} ponownie po ${actual_wait}s"
 
-    # Nowe baseline
     local new_baseline
     _bh_baseline "$ip" "80"; new_baseline="$_BH_RET"
     local new_ms="${new_baseline%%|*}"
 
-    # Porownaj z poprzednim
     local old_ms="${BH["${ip}:80:baseline_ms"]:-0}"
 
     if _is_int "$new_ms" && _is_int "$old_ms" && (( old_ms > 0 )); then
@@ -8630,24 +6992,21 @@ _return_visit() {
         (( delta < 0 )) && delta=$(( -delta ))
 
         if (( delta > old_ms / 2 )); then
-            # Latencja nadal podwyzszona — system pamięta
-            _bh_log "RETURN ${ip}: system pamięta! old=${old_ms}ms new=${new_ms}ms delta=${delta}ms"
+            _bh_log "RETURN ${ip}: system remembers! old=${old_ms}ms new=${new_ms}ms delta=${delta}ms"
             BH["${ip}:return_memory"]="YES"
             BH["${ip}:return_delta_ms"]="$delta"
             (( SESSION_STATE[correlation_score] += 15 ))
             _sched_update_threat 10
             add_net_finding "HIGH" "BEHAVIOURAL_RETURN" \
-                "${ip}: System pamięta poprzednią sesję (latencja +${delta}ms po ${actual_wait}s przerwy)" \
-                "Reputacyjna blokada lub stan sesji utrzymywany ponad minutę. Wskazuje na NDR/EDR z pamięcią stanów."
+                "${ip}: System remembers previous session (latency +${delta}ms after ${actual_wait}s gap)" \
+                "Reputation block or session state persisting over a minute. Indicates NDR/EDR with state memory."
         else
-            # Wrocilo do normy — strażnik zapomniał
             _bh_log "RETURN ${ip}: strażnik zapomniał (${old_ms}ms → ${new_ms}ms — norma)"
             BH["${ip}:return_memory"]="NO"
             BH["${ip}:return_delta_ms"]="$delta"
         fi
     fi
 
-    # Powtorow deception test
     local dec_result
     _bh_deception_probe "$ip"; dec_result="$_BH_RET"
     local new_dec="${dec_result%%|*}"
@@ -8658,17 +7017,11 @@ _return_visit() {
         if (( dec_delta > 20 )); then
             _bh_log "RETURN ${ip}: deception wzrósł po powrocie (+${dec_delta}) — dynamiczna warstwa deception"
             add_net_finding "HIGH" "BEHAVIOURAL_RETURN" \
-                "${ip}: Warstwa deception zmienila sie miedzy wizytami (+${dec_delta} punktów)" \
-                "Dynamiczna warstwa deception. Sieć rozpoznaje wzorce audytora."
+                "${ip}: Deception layer changed between visits (+${dec_delta} points)" \
+                "Dynamic deception layer. Network recognises auditor patterns."
         fi
     fi
 }
-
-# CHOOSE NEXT TARGET — PIES IDZIE W STRONE NAJSILNIEJSZEGO ZAPACHU
-# Nie skanuje zakresu. Decyduje gdzie isc na podstawie:
-#   1. Co dotychczas odkryto (mapa behawioralna)
-#   2. Gdzie reakcja była najsilniejsza (entropia)
-#   3. Co nie było jeszcze zbadane w tej rundzie
 
 _choose_next_target() {
     local -a candidates=("$@")
@@ -8677,23 +7030,18 @@ _choose_next_target() {
     for ip in "${candidates[@]}"; do
         local score=0
 
-        # Prioritize hosts with observed reactivity
         local react="${BH["${ip}:80:reactivity"]:-0}"
         local escal="${BH["${ip}:80:escalation"]:-0}"
         local dec="${BH["${ip}:deception_score"]:-0}"
         local probed="${BH["${ip}:probed"]:-0}"
 
-        # Nie odwiedzony = wysoki priorytet
         (( probed == 0 )) && (( score += 50 ))
 
-        # Reaktywny = idz dalej — tam jest cos ciekawego
         (( react == 1 )) && (( score += 30 ))
         (( escal == 1 )) && (( score += 20 ))
 
-        # Deception = zmniejsz priorytet (juz wiemy) ale nie zeruj
         (( dec > 50 )) && (( score -= 10 ))
 
-        # Losowy szum — pies nie chodzi przewidywalnie
         score=$(( score + (RANDOM % 15) ))
 
         if (( score > best_score )); then
@@ -8705,11 +7053,6 @@ _choose_next_target() {
     _BH_RET="$best_ip"
     echo "$best_ip"
 }
-
-# GLOWNA PETLA EKSPLORACYJNA — NOWY RDZEN
-# Zastepuje statyczny pipeline.
-# Sterownik calego audytu behawioralnego.
-
 
 run_exploration_loop() {
     local -a all_hosts=("$@")
@@ -8736,7 +7079,7 @@ run_exploration_loop() {
         done
         if (( ${#nf_samples[@]} >= 3 )); then
             SESSION_STATE[noise_floor]=$(_median_int "${nf_samples[@]}")
-            _bh_log "NOISE FLOOR ustalony: ${SESSION_STATE[noise_floor]}ms (via target ${nf_target})"
+            _bh_log "NOISE FLOOR established: ${SESSION_STATE[noise_floor]}ms (via target ${nf_target})"
         fi
     fi
 
@@ -8798,7 +7141,7 @@ run_exploration_loop() {
                 local xdelta=$(( ms_a - ms_b ))
                 (( xdelta < 0 )) && xdelta=$(( -xdelta ))
                 if (( xdelta > 200 )); then
-                    _bh_log "CROSS-HOST: ${ref_ip} zmienil sie o ${xdelta}ms po probie ${ip} — centralny IDS/SIEM"
+                    _bh_log "CROSS-HOST: ${ref_ip} zmienil sie o ${xdelta}ms after probing ${ip} — centralny IDS/SIEM"
                     (( SESSION_STATE[correlation_score] += 20 ))
                     SESSION_STATE[adaptation_detected]=1
                     _sched_update_threat 15
@@ -8856,28 +7199,13 @@ run_exploration_loop() {
     if (( SESSION_STATE[adaptation_detected] == 1 )); then
         add_net_finding "HIGH" "SESSION_ANALYSIS" \
             "Siec wykazala adaptacje behawioralna w trakcie sesji audytowej" \
-            "System centralnie koreluje zdarzenia. Audyt klasyczny jest widoczny i analizowany w czasie rzeczywistym."
+            "System centrally correlates events. Classical audit is visible and analysed in real time."
     fi
 }
 
-
-
-
-# SLIDING WINDOW — MODEL ESKALACJI CZASOWEJ
-#
-# Obserwuje każde 5 kroków. Czy tempo rośnie? Czy maleje?
-#
-# Zbiera N próbek z timestampami. Analizuje:
-#   - czy latencja rośnie liniowo (rate limiting)
-#   - czy ma skok (threshold-based ban)
-#   - czy spada po przerwie (recovery signature)
-#
-# Wynik: escalation_type = NONE|GRADUAL|THRESHOLD|BURSTY
-
-# Bufor sliding window: ip:port:window = "ts1:ms1 ts2:ms2 ..."
 declare -A BH_WINDOW=()
-declare -i BH_WINDOW_SIZE=8        # rozmiar okna próbek
-declare -i BH_WINDOW_THRESHOLD=150 # ms wzrostu = sygnał eskalacji
+declare -i BH_WINDOW_SIZE=8        # rozmiar okna probesek
+declare -i BH_WINDOW_THRESHOLD=150 # ms increase = escalation signal
 
 _bh_window_add() {
     local ip="$1" port="$2" ms="$3"
@@ -8886,7 +7214,6 @@ _bh_window_add() {
     local entry="${ts}:${ms}"
     local current="${BH_WINDOW[$key]:-}"
 
-    # Dodaj nową próbkę
     local new_win
     new_win=$(echo "$current $entry" | tr ' ' '\n' | grep -v '^$' | tail -"$BH_WINDOW_SIZE" | tr '\n' ' ')
     BH_WINDOW["$key"]="${new_win% }"
@@ -8918,7 +7245,6 @@ _bh_window_analyze() {
     local escalation_type="NONE"
     local max_jump=0
 
-    # Znajdź największy skok między kolejnymi próbkami
     local i
     for (( i=1; i<n; i++ )); do
         local prev="${vals[$((i-1))]}" curr="${vals[$i]}"
@@ -8928,14 +7254,10 @@ _bh_window_analyze() {
         (( jump > max_jump )) && max_jump=$jump
     done
 
-    # Klasyfikuj wzorzec
     if (( total_delta > BH_WINDOW_THRESHOLD * 3 && max_jump < total_delta / 2 )); then
-        # Wolny, liniowy wzrost — rate limiting
         escalation_type="GRADUAL"
     elif (( max_jump > BH_WINDOW_THRESHOLD * 2 && max_jump > total_delta * 6/10 )); then
-        # Jeden duży skok — próg bana (N-probe threshold ban)
         escalation_type="THRESHOLD"
-        # Zapisz gdzie był próg
         for (( i=1; i<n; i++ )); do
             local prev="${vals[$((i-1))]}" curr="${vals[$i]}"
             _is_int "$prev" && _is_int "$curr" || continue
@@ -8943,12 +7265,11 @@ _bh_window_analyze() {
             (( jump == max_jump )) && {
                 BH["${ip}:${port}:escalation_probe_n"]="$i"
                 SESSION_STATE[escalation_threshold]="$i"
-                _bh_log "WINDOW: próg bana wykryty przy próbie N=$i (${prev}ms → ${curr}ms)"
+                _bh_log "WINDOW: ban threshold detected at probe N=$i (${prev}ms → ${curr}ms)"
                 break
             }
         done
     elif (( total_delta > BH_WINDOW_THRESHOLD && mid > first && mid > last )); then
-        # Szczyt w środku — burst reaction
         escalation_type="BURSTY"
     elif (( total_delta > BH_WINDOW_THRESHOLD )); then
         escalation_type="GRADUAL"
@@ -8962,7 +7283,6 @@ _bh_window_analyze() {
     echo "${escalation_type}|${total_delta}|${max_jump}"
 }
 
-# Probe z automatycznym dodaniem do sliding window
 _bh_window_probe() {
     local ip="$1" port="$2"
     _bh_budget_ok || return 1
@@ -8972,15 +7292,6 @@ _bh_window_probe() {
     echo "$raw"
 }
 
-# CROSS-SERVICE DEPENDENCY — port A response changes after probing port B
-# Metoda:
-#   1. Baseline port B
-#   2. Probe port A (N razy)
-#   3. Measure port B ponownie
-#   4. Delta > threshold → cross-service dependency
-#
-# Wynik: dependency_matrix[A→B] = delta_ms
-
 declare -A BH_CROSS_SERVICE=()  # "${ip}:srcport→dstport" = delta_ms
 
 _bh_cross_service() {
@@ -8989,7 +7300,6 @@ _bh_cross_service() {
 
     _bh_log "CROSS-SERVICE PROBE ${ip}"
 
-    # Pary port→port do sprawdzenia
     local -a pairs=("22→80" "22→443" "80→22" "443→22" "80→443")
     local detected=0
     local dependency_report=""
@@ -8997,20 +7307,17 @@ _bh_cross_service() {
     for pair in "${pairs[@]}"; do
         local src_port="${pair%%→*}" dst_port="${pair##*→}"
 
-        # 1. Baseline dst_port
         _bh_jitter 200 50
         local raw_b; raw_b=$(_bh_probe_full "$ip" "$dst_port")
         local ms_before="${raw_b%%|*}"
         _is_int "$ms_before" || continue
 
-        # 2. Probe src_port N razy (trigger)
         local i
         for (( i=0; i<3; i++ )); do
             _bh_probe_full "$ip" "$src_port" >/dev/null
             sleep 0.08
         done
 
-        # 3. Measure dst_port po triggerze
         _bh_jitter 100 30
         local raw_a; raw_a=$(_bh_probe_full "$ip" "$dst_port")
         local ms_after="${raw_a%%|*}"
@@ -9038,44 +7345,28 @@ _bh_cross_service() {
     BH["${ip}:cross_service_pairs"]="${dependency_report:-none}"
 
     if (( detected >= 2 )); then
-        _bh_log "CROSS-SERVICE ${ip}: ${detected} par — centralny IDS/IPS z korelacją portów"
+        _bh_log "CROSS-SERVICE ${ip}: ${detected} par — centralny IDS/IPS z korelacją ports"
         add_net_finding "HIGH" "BEHAVIOURAL_CROSS_SERVICE" \
-            "${ip}: Wykryto korelację między portami (${detected} par). Dotknięcie portu X zmienia odpowiedź portu Y." \
-            "Wskazuje na centralny IDS/IPS analizujący ruch jako sesję, nie jako izolowane połączenia. Sygnatura: ${dependency_report}"
+            "${ip}: Cross-port correlation detected (${detected} pairs). Touching port X changes response on port Y." \
+            "Indicates central IDS/IPS analysing traffic as session, not isolated connections. Signature: ${dependency_report}"
         SESSION_STATE[adaptation_detected]=1
         _sched_update_threat 15
     elif (( detected == 1 )); then
-        _bh_log "CROSS-SERVICE ${ip}: 1 para — możliwa korelacja lub jitter sieci"
+        _bh_log "CROSS-SERVICE ${ip}: 1 para — możliwa korelacja or jitter sieci"
     fi
 
     echo "$detected"
 }
 
-# THREAT SCORING — DETERMINISTYCZNA FUNKCJA
-#
-# Zamiast: SESSION_STATE[threat_level] += 15   (arbitralnie)
-# Mamy:   threat = f(deception, correlation, escalation, cross_service)
-#
-# Model:
-#   DECEPTION     → 0-40 pkt  (deception_score/100 * 40)
-#   CORRELATION   → 0-30 pkt  (cross_host + cross_service)
-#   ESCALATION    → 0-20 pkt  (window_type)
-#   ADAPTATION    → 0-10 pkt  (return_memory + adaptation_detected)
-#
-# Razem max 100. Mapuje bezpośrednio na SESSION_STATE[threat_level].
-
 _bh_threat_score() {
-    # Zbiera dane ze wszystkich przebadanych hostów i wylicza globalny threat level
 
     local deception_total=0 deception_hosts=0
     local correlation_pts=0
     local escalation_pts=0
     local adaptation_pts=0
 
-    # Iteruj przez wszystkich przebadanych hostów
     local ip
     for ip in "${!BH[@]}"; do
-        # Wyciągnij tylko klucze ip (pattern: X.X.X.X:zone)
         [[ "$ip" != *:zone ]] && continue
         local host="${ip%%:*}"
 
@@ -9098,21 +7389,17 @@ _bh_threat_score() {
         [[ "${BH["${host}:return_memory"]:-}" == "YES" ]] && (( adaptation_pts += 5 ))
     done
 
-    # Normalizuj deception (0-40 pkt)
     local dec_pts=0
     (( deception_hosts > 0 )) && {
         local dec_avg=$(( deception_total / deception_hosts ))
         dec_pts=$(( dec_avg * 40 / 100 ))
     }
 
-    # Normalizuj correlation (0-30 pkt)
     local corr_pts=$(( SESSION_STATE[cross_host_latency_shift] * 10 + correlation_pts ))
     (( corr_pts > 30 )) && corr_pts=30
 
-    # Normalizuj escalation (0-20 pkt)
     (( escalation_pts > 20 )) && escalation_pts=20
 
-    # Adaptation (0-10 pkt)
     (( SESSION_STATE[adaptation_detected] == 1 )) && (( adaptation_pts += 5 ))
     (( adaptation_pts > 10 )) && adaptation_pts=10
 
@@ -9123,12 +7410,9 @@ _bh_threat_score() {
 
     _bh_log "THREAT_SCORE: dec=${dec_pts} corr=${corr_pts} escal=${escalation_pts} adapt=${adaptation_pts} → TOTAL=${threat}"
 
-    # Update probe_speed na podstawie deterministycznego threat
-    _sched_update_threat 0   # wywołaj bez delty żeby przeliczyć prędkość
+    _sched_update_threat 0
     echo "$threat"
 }
-
-
 
 _bh_ts()   { date +%s%3N; }
 _bh_ts_s() { date +%s; }
@@ -9152,7 +7436,6 @@ _bh_spend() {
     _sched_rate_ok
 }
 
-# Kameleon nie chodzi równym krokiem
 _bh_jitter() {
     local max="${1:-$BH_JITTER_MAX}"
     local min="${2:-$BH_JITTER_MIN}"
@@ -9162,11 +7445,6 @@ _bh_jitter() {
     local sec="0.$(printf '%03d' $(( ms % 1000 )))"
     sleep "$sec" 2>/dev/null || sleep 1
 }
-
-# Returns: "ms|state|rst_class"
-#   ms         — czas odpowiedzi
-#   state      — OPEN / CLOSED / FILTERED / NO_ROUTE
-#   rst_class  — FAST_RST / SLOW_RST / TIMEOUT_DROP / OPEN / NO_ROUTE
 
 _bh_probe_full() {
     local ip="$1" port="$2"
@@ -9203,9 +7481,6 @@ _bh_probe_full() {
     _bh_spend 1
     echo "${ms}|${state}|${rst_class}"
 }
-
-#
-# Nie szuka drzwi. Słucha temperatury.
 
 _bh_baseline() {
     local ip="$1" port="$2"
@@ -9246,10 +7521,6 @@ _bh_baseline() {
     echo "${med}|${dominant_state}|${dominant_rst}|${variance}"
 }
 
-#
-# Potem siada. Czeka. Patrzy czy strażnik biegnie.
-# Potem wstaje — sprawdza czy już jest inaczej.
-
 _bh_burst_test() {
     local ip="$1" port="$2"
     _bh_budget_ok || return 1
@@ -9271,10 +7542,9 @@ _bh_burst_test() {
         sleep 0.04
     done
 
-    # Analizuj sliding window po burście
     _bh_window_analyze "$ip" "$port"; local win_result="$_BH_RET"
     local win_type="${win_result%%|*}"
-    _bh_log "WINDOW po burście ${ip}:${port} -> ${win_result}"
+    _bh_log "WINDOW after burst ${ip}:${port} -> ${win_result}"
 
     local burst_med=0
     (( ${#burst_samples[@]} > 0 )) && burst_med=$(_median_int "${burst_samples[@]}")
@@ -9289,11 +7559,9 @@ _bh_burst_test() {
 
     _bh_log "BURST MED ${ip}:${port} -> ${burst_med}ms (baseline: ${baseline_ms}ms, state_change=${state_change})"
 
-    # COOLDOWN
     _bh_log "COOLDOWN ${BH_COOLDOWN}s"
     sleep "$BH_COOLDOWN"
 
-    # POST-BURST
     local post_samples=() post_states=() j raw2 ms2 state2
     for j in 1 2 3; do
         _bh_jitter 500 150
@@ -9326,12 +7594,6 @@ _bh_burst_test() {
     _bh_log "REACTION ${ip}:${port} -> react=${reactivity} adapt=${adaptivity} escal=${escalation} post=${post_med}ms"
     echo "${reactivity}|${adaptivity}|${escalation}|${burst_med}|${post_med}"
 }
-
-#
-# Obserwuje czy strażnik zawsze stoi pod tym samym obrazem
-# czy podąża za sekwencją.
-#
-# Czysty firewall — nie koreluje. Korelujący IDS/SIEM — tak.
 
 _bh_correlation_probe() {
     local ip="$1"
@@ -9373,7 +7635,7 @@ _bh_correlation_probe() {
         (( bvar < 10 )) && bvar=30
         if (( diff_22 > bvar * 3 )); then
             correlation=1
-            _bh_log "CORRELATION DETECTED ${ip} — sekwencja portów zmienia odpowiedź (${ms_22_a}ms -> ${ms_22_b}ms)"
+            _bh_log "CORRELATION DETECTED ${ip} — sekwencja ports zmienia odpowiedź (${ms_22_a}ms -> ${ms_22_b}ms)"
         fi
     fi
 
@@ -9381,15 +7643,6 @@ _bh_correlation_probe() {
     _bh_log "CORRELATION ${ip} -> ${correlation} (22_a=${ms_22_a}ms, 22_b=${ms_22_b}ms)"
     echo "$correlation"
 }
-
-#
-# Jeśli wszyscy odpowiadają identycznie — to manekiny.
-#
-# Sygnaly:
-#   - port ciemny otwarty (honeypot)
-#   - ultra-szybki OPEN < 8ms (fake listener)
-#   - uniforma odpowiedź na wszystkich trap portach
-#   - tarpit — czas rośnie z każdą próbą
 
 _bh_deception_probe() {
     local ip="$1"
@@ -9400,7 +7653,6 @@ _bh_deception_probe() {
     local deception_score=0
     local deception_signals=() p raw ms state rst
 
-    # Test 1: ciemne porty — otwarty = honeypot
     for p in 31337 6666 4444 12345 9999; do
         _bh_jitter 200 50
         raw=$(_bh_probe_full "$ip" "$p")
@@ -9413,7 +7665,6 @@ _bh_deception_probe() {
         fi
     done
 
-    # Test 2: ultra-szybki OPEN (<8ms) — niemożliwe fizycznie
     raw=$(_bh_probe_full "$ip" "80")
     ms="${raw%%|*}"
     state="${raw#*|}"; state="${state%%|*}"
@@ -9423,7 +7674,6 @@ _bh_deception_probe() {
         _bh_log "  DECEPTION: port 80 otwiera sie w ${ms}ms (fake listener?)"
     fi
 
-    # Test 3: uniforma odpowiedź na trap portach
     local trap_responses=()
     for p in 8888 9090 7777; do
         _bh_jitter 150 30
@@ -9444,7 +7694,6 @@ _bh_deception_probe() {
         fi
     fi
 
-    # Test 4: tarpit — czas rośnie z każdą próbą
     local tarpit_samples=()
     for i in 1 2 3; do
         raw=$(_bh_probe_full "$ip" "22")
@@ -9473,10 +7722,6 @@ _bh_deception_probe() {
     echo "${deception_score}|${verdict}"
 }
 
-#
-# Dużo hałasu. Potem cisza.
-# Potem jeden cichy krok — czy strażnik reaguje tak samo?
-
 _bh_noise_tolerance() {
     local ip="$1" port="${2:-80}"
     _bh_budget_ok || return 1
@@ -9496,18 +7741,16 @@ _bh_noise_tolerance() {
 
         if (( i > 4 && ms <= baseline_ms * 2 && previous_ms > baseline_ms * 3 )); then
             noise_threshold=$i
-            _bh_log "  NOISE: obrona odpuscila przy próbie ${i} (${previous_ms}ms -> ${ms}ms)"
+            _bh_log "  NOISE: defence relented at probe ${i} (${previous_ms}ms -> ${ms}ms)"
             break
         fi
         (( ms > baseline_ms * 4 )) && (( degraded++ ))
         previous_ms="$ms"
     done
 
-    # Cisza — złodziej sie chowa
     sleep 4
     _bh_jitter 600 200
 
-    # Jeden próbny krok po ciszy
     raw=$(_bh_probe_full "$ip" "$port")
     ms="${raw%%|*}"
     local recovery_ms="${ms:-0}" recovery_signal="NORMAL"
@@ -9524,8 +7767,6 @@ _bh_noise_tolerance() {
     echo "${noise_threshold}|${degraded}|${recovery_signal}"
 }
 
-#
-
 _bh_classify_zone() {
     local ip="$1"
 
@@ -9538,7 +7779,6 @@ _bh_classify_zone() {
     local state="${BH["${ip}:80:baseline_state"]:-UNKNOWN}"
 
     local zone="UNKNOWN" confidence=0
-    # Confidence budowany z sygnałów — nie statyczne wartości
     local signals=0
     (( reactivity == 1 ))  && (( signals++ ))
     (( escalation == 1 ))  && (( signals++ ))
@@ -9551,11 +7791,9 @@ _bh_classify_zone() {
         zone="OFFLINE"; confidence=95
     elif [[ "$state" == "FILTERED" ]] && (( reactivity == 0 && deception < 20 )); then
         zone="SILENT"
-        # Niska pewność — może być firewall DROP lub offline
         confidence=$(( 55 + signals * 8 )); (( confidence > 85 )) && confidence=85
     elif (( deception >= 55 )); then
         zone="DECEPTION"
-        # Confidence proporcjonalny do wyniku deception
         confidence=$(( deception * 90 / 100 )); (( confidence > 99 )) && confidence=99
     elif (( correlation == 1 )); then
         zone="CORRELATED"
@@ -9581,7 +7819,6 @@ _bh_classify_zone() {
     _bh_log "ZONE ${ip} -> ${zone} (confidence=${confidence}%)"
     echo "${zone}|${confidence}"
 }
-
 
 _bh_score_host() {
     local ip="$1"
@@ -9619,24 +7856,19 @@ _bh_score_host() {
     echo "$_BH_RET"
 }
 
-#
-#
-#   while budget > 0:
-#     target = choose_next()    — highest reactivity score
-#     probe()                   — dotknij
-#     measure()                 — zmierz reakcje
-#     update_map()              — zaktualizuj strefe
-#     adapt_strategy()          — idź w strone różnicy
-
 run_phase_x() {
     local hosts=("$@")
     [[ ${#hosts[@]} -eq 0 ]] && {
-        _bh_log "Brak hostow do eksploracji behawioralnej"
+        _bh_log "No hosts for behavioural exploration"
         return 0
     }
 
     log "======================================================" "TOPO"
-    log " FAZA X: BEHAVIOURAL RECON" "TOPO"
+    if [[ "${ENABLE_PHASE_X:-0}" != "1" ]]; then
+        log "Phase X: SKIPPED (enable via --phase-x)" "INFO"
+        return 0
+    fi
+    log " PHASE X: BEHAVIOURAL RECON" "TOPO"
     log " Hosts: ${#hosts[@]} | Budget: ${BH_BUDGET} prob" "TOPO"
     log "======================================================" "TOPO"
 
@@ -9654,43 +7886,34 @@ run_phase_x() {
 
     for ip in "${hosts[@]}"; do
         _bh_budget_ok || {
-            _bh_log "Budget wyczerpany przy ${ip} — zatrzymuje eksploracje"
+            _bh_log "Budget exhausted at ${ip} — stopping exploration"
             break
         }
 
-        _bh_log "==== EKSPLORACJA: ${ip} (budget=${BH_BUDGET}) ===="
+        _bh_log "==== EXPLORATION: ${ip} (budget=${BH_BUDGET}) ===="
 
-        # KROK 1: DOTYK — baseline
         local p
         for p in 80 22 443; do
             _bh_budget_ok || break
             _bh_baseline "$ip" "$p"
         done
 
-        # KROK 2: BURST — reaktywnosc
         _bh_budget_ok && _bh_burst_test "$ip" "80"
 
-        # KROK 3: KORELACJA — czy porty "rozmawiaja ze soba"?
         _bh_budget_ok && _bh_correlation_probe "$ip"
 
-        # KROK 4: DECEPTION — czy to co widze to prawda?
         _bh_budget_ok && _bh_deception_probe "$ip"
 
-        # KROK 5: NOISE — gdzie jest próg zmeczenia strażnika?
         _bh_budget_ok && _bh_noise_tolerance "$ip" "80"
 
-        # KROK 5b: CROSS-SERVICE — czy port A zmienia port B?
         _bh_budget_ok && _bh_cross_service "$ip"
 
-        # KROK 6: MAPA — strefa behawioralna
         local zone_result zone
         _bh_classify_zone "$ip"; zone_result="$_BH_RET"
         zone="${zone_result%%|*}"
 
-        # KROK 7: SCORING
         _bh_score_host "$ip"
 
-        # Liczniki stref
         case "$zone" in
             REACTIVE)   (( PHASE_X[zones_reactive]++ )) ;;
             DECEPTION)  (( PHASE_X[zones_deception]++ )) ;;
@@ -9701,22 +7924,18 @@ run_phase_x() {
             EXPOSED)    (( PHASE_X[zones_exposed]++ )) ;;
         esac
 
-        # ADAPTACJA STRATEGII — silnik uczy sie
         if [[ "$zone" == "DECEPTION" ]]; then
-            _bh_log "ADAPTIVE: deception wykryty -> zwiekszam jitter"
+            _bh_log "ADAPTIVE: deception detected -> increasing jitter"
             BH_JITTER_MAX=$(( BH_JITTER_MAX + 200 ))
             (( BH_BURST_SIZE > 2 )) && (( BH_BURST_SIZE-- ))
         fi
 
         if [[ "$zone" == "CORRELATED" ]]; then
             _bh_log "ADAPTIVE: korelacja wykryta -> zmieniam kolejnosc portow"
-            # Nastepny host dostanie inne porty w innej kolejnosci
-            # (implementacja: shuffle BH_PORTS przez RANDOM)
         fi
 
         _bh_log "HOST ${ip} DONE -> ZONE=${zone} RS=${BH["${ip}:score_reactivity"]} AI=${BH["${ip}:score_adaptivity"]} DP=${BH["${ip}:score_deception"]}"
 
-        # Przerwa — kameleon nie spieszy
         _bh_jitter 1200 300
     done
 
@@ -9725,21 +7944,18 @@ run_phase_x() {
     PHASE_X[budget_remaining]="$BH_BUDGET"
     PHASE_X[events_count]="${#BH_EVENTS[@]}"
 
-    # FINALIZACJA — deterministyczny threat score z zebranych danych
     local final_threat; final_threat=$(_bh_threat_score)
     PHASE_X[final_threat]="$final_threat"
 
-    log " FAZA X ZAKONCZONA — czas: ${PHASE_X[duration]}s | zdarzenia: ${PHASE_X[events_count]}" "TOPO"
+    log " PHASE X COMPLETE — czas: ${PHASE_X[duration]}s | zdarzenia: ${PHASE_X[events_count]}" "TOPO"
     log " Threat Score (deterministyczny): ${final_threat}/100" "TOPO"
     log " Strefy: REACTIVE=${PHASE_X[zones_reactive]} DECEPTION=${PHASE_X[zones_deception]} CORRELATED=${PHASE_X[zones_correlated]} ADAPTIVE=${PHASE_X[zones_adaptive]}" "TOPO"
     log " Strefy: ESCALATING=${PHASE_X[zones_escalating]} SILENT=${PHASE_X[zones_silent]} EXPOSED=${PHASE_X[zones_exposed]}" "TOPO"
 }
 
-
 export_phase_x_findings() {
     local ip
 
-    # ── PER-HOST: zachowanie + interpretacja actionable ───────────────────────
     for ip in "${!BMAP[@]}"; do
         local zone="${BMAP[$ip]}"
         local rs="${BH["${ip}:score_reactivity"]:-0}"
@@ -9759,93 +7975,85 @@ export_phase_x_findings() {
         case "$zone" in
 
             DECEPTION)
-                # Rozróżnij typy deception na podstawie sygnałów
                 local dec_type="nieznany typ"
                 local dec_rec=""
                 if echo "$deception_sigs" | grep -q "dark_port"; then
                     dec_type="honeypot (ciemne porty otwarte)"
-                    dec_rec="Honeypot aktywny — porty które nie powinny odpowiadać, odpowiadają. Upewnij się że honeypot nie obejmuje portów produkcyjnych. Zweryfikuj czy alerty z honeypota trafiają do SIEM."
+                    dec_rec="Honeypot active — ports that should not respond are responding. Ensure honeypot does not cover production ports. Verify honeypot alerts reach SIEM."
                 elif echo "$deception_sigs" | grep -q "uniform_trap"; then
-                    dec_type="tarpit (uniforma odpowiedź na trap portach)"
-                    dec_rec="Tarpit wykryty — wszystkie porty testowe odpowiadają identycznie. Sprawdź czy tarpit nie blokuje legalnych skanerów wewnętrznych (Qualys, Tenable). Wykluczenie po IP jest wymagane."
+                    dec_type="tarpit (uniform response on trap ports)"
+                    dec_rec="Tarpit detected — all test ports respond identically. Check that tarpit does not block legitimate internal scanners (Qualys, Tenable). IP-based exclusion is required."
                 elif echo "$deception_sigs" | grep -q "instant_open"; then
                     dec_type="fake listener (<8ms — niemożliwe fizycznie)"
-                    dec_rec="Fałszywy listener wykryty — port odpowiada szybciej niż fizycznie możliwe. Wskazuje na software-level trap (HoneyD, OpenCanary). Zweryfikuj konfigurację deception platformy."
+                    dec_rec="Fake listener detected — port responds faster than physically possible. Indicates software-level trap (HoneyD, OpenCanary). Verify deception platform configuration."
                 elif echo "$deception_sigs" | grep -q "tarpit_rtt"; then
-                    dec_type="SSH tarpit (progresywne opóźnienia)"
-                    dec_rec="SSH tarpit aktywny — czas połączenia rośnie progresywnie. Dobra konfiguracja, ale upewnij się że jump host / bastion jest na whiteliście."
+                    dec_type="SSH tarpit (progressive delays)"
+                    dec_rec="SSH tarpit active — connection time increases progressively. Good configuration, but ensure jump host / bastion is whitelisted."
                 fi
-                add_net_finding "HIGH" "BEHAVIOURAL_DECEPTION"                     "${ip}: Warstwa deception — ${dec_type} (score=${dp}%, confidence=${conf}%, sygnaly: ${deception_sigs:-?})"                     "${dec_rec:-Zweryfikuj konfigurację deception. Upewnij się że alerty trafiają do SIEM i że produkcja jest wyłączona z zakresu.}"
+                add_net_finding "HIGH" "BEHAVIOURAL_DECEPTION"                     "${ip}: Warstwa deception — ${dec_type} (score=${dp}%, confidence=${conf}%, sygnaly: ${deception_sigs:-?})"                     "${dec_rec:-Verify deception configuration. Ensure alerts reach SIEM and production is excluded from scope.}"
                 ;;
 
             CORRELATED)
-                # Korelacja = IDS/NDR/SIEM analizuje sekwencje
-                local corr_rec="Każda sekwencja prób jest widoczna dla centralnego systemu. Footprint audytora jest rejestrowany. Przy następnym audycie użyj strategii low-noise: --mode passive lub zwiększ jitter (--jitter 2000)."
+                local corr_rec="Every probe sequence is visible to the central system. Auditor footprint is recorded. For next audit use low-noise strategy: --mode passive or increase jitter (--jitter 2000)."
                 if (( cl >= 80 )); then
-                    corr_rec="Wysoka korelacja (${cl}%) wskazuje na dojrzałą, scentralizowaną korelację zdarzeń lub telemetrię czasu rzeczywistego. Aktywne próby są dobrze widoczne. Rekomendacja: ogranicz zakres do walidacji pasywnej i uzgodnij okno audytu z właścicielem środowiska."
+                    corr_rec="High correlation (${cl}%) indicates mature centralised event correlation or real-time telemetry. Active probes are highly visible. Recommendation: limit scope to passive validation and agree audit window with environment owner."
                 elif (( cl >= 50 )); then
-                    corr_rec="Korelacja medium (${cl}%) — środowisko reaguje jak sieć z aktywną korelacją i progowaniem zdarzeń. Zweryfikuj progi i telemetrię bez wskazywania konkretnego produktu."
+                    corr_rec="Medium correlation (${cl}%) — environment reacts like a network with active event correlation and thresholding. Verify thresholds and telemetry without naming specific products."
                 fi
-                add_net_finding "HIGH" "BEHAVIOURAL_CORRELATED"                     "${ip}: Korelacja zdarzen miedzy portami (score=${cl}%, confidence=${conf}%) — aktywny IDS/SIEM/NDR"                     "$corr_rec"
+                add_net_finding "HIGH" "BEHAVIOURAL_CORRELATED"                     "${ip}: Cross-port event correlation (score=${cl}%, confidence=${conf}%) — active IDS/SIEM/NDR"                     "$corr_rec"
                 ;;
 
             ADAPTIVE)
-                # Adaptacja z pamięcią = reputacja IP, persistent block
                 local adap_rec=""
                 if [[ "$recovery" == "STILL_ELEVATED" ]]; then
-                    adap_rec="System pamięta IP audytora — blokada nie znika po cooldown (latencja nadal podwyższona: ${post_burst:-?}ms po burście vs baseline ${baseline}ms). Wskazuje na reputacyjny blacklist (CrowdSec, fail2ban z długim ban-time). Zalecenie: skróć ban-time lub wdróż automatyczne IP rotation dla autoryzowanych skanerów."
+                    adap_rec="System remembers auditor IP — block does not expire after cooldown (latency still elevated: ${post_burst:-?}ms post-burst vs baseline ${baseline}ms). Indicates reputation blacklist (CrowdSec, fail2ban with long ban-time). Recommendation: shorten ban-time or deploy automatic IP rotation for authorised scanners."
                 else
-                    adap_rec="Obrona adaptacyjna (AI=${ai}%) — system zmienia zachowanie w odpowiedzi na probe pattern. Prawdopodobnie fail2ban lub podobny. Obecny ban-time wydaje się krótki (recovery widoczny). Rozważ zwiększenie ban-time do 24h+ dla nieznanych IP."
+                    adap_rec="Adaptive defence (AI=${ai}%) — system changes behaviour in response to probe pattern. Likely fail2ban or similar. Current ban-time appears short (recovery visible). Consider increasing ban-time to 24h+ for unknown IPs."
                 fi
-                add_net_finding "MEDIUM" "BEHAVIOURAL_ADAPTIVE"                     "${ip}: Obrona adaptacyjna z pamiecią (AI=${ai}%, recovery=${recovery}, post_burst=${post_burst}ms)"                     "$adap_rec"
+                add_net_finding "MEDIUM" "BEHAVIOURAL_ADAPTIVE"                     "${ip}: Adaptive defence with memory (AI=${ai}%, recovery=${recovery}, post_burst=${post_burst}ms)"                     "$adap_rec"
                 ;;
 
             ESCALATING)
-                # Eskalacja = rate limiter lub IPS z progresywnym throttlingiem
                 local esc_rec=""
                 if [[ "$win_type" == "THRESHOLD" ]] && (( ban_probe > 0 )); then
-                    esc_rec="Próg blokady wykryty przy próbie N=${ban_probe} — po ${ban_probe} połączeniach latencja skacze (${baseline}ms → podwyższone). To jest próg IDS/IPS ban-trigger. Ocena progu: "
+                    esc_rec="Ban threshold detected at probe N=${ban_probe} — after ${ban_probe} connections latency jumps (${baseline}ms → elevated). This is the IDS/IPS ban-trigger threshold. Assessment: "
                     if (( ban_probe <= 3 )); then
-                        esc_rec="${esc_rec}BARDZO AGRESYWNY (N=${ban_probe}) — może blokować legalne skanery Qualys/Tenable/Nessus. Rozważ zwiększenie progu do minimum 5-10 dla znanych podsieci audytowych."
+                        esc_rec="${esc_rec}VERY AGGRESSIVE (N=${ban_probe}) — may block legitimate scanners Qualys/Tenable/Nessus. Consider increasing threshold to minimum 5-10 for known audit subnets."
                     elif (( ban_probe <= 7 )); then
-                        esc_rec="${esc_rec}AGRESYWNY (N=${ban_probe}) — dobry dla produkcji, ale wyklucz IP skanerów autoryzowanych z tego progu."
+                        esc_rec="${esc_rec}AGRESYWNY (N=${ban_probe}) — dobry for produkcji, ale wyklucz IP skanerów autoryzowanych z tego progu."
                     else
-                        esc_rec="${esc_rec}UMIARKOWANY (N=${ban_probe}) — akceptowalny kompromis. Dla środowisk high-security rozważ obniżenie do 5."
+                        esc_rec="${esc_rec}MODERATE (N=${ban_probe}) — acceptable compromise. For high-security environments consider lowering to 5."
                     fi
                 elif [[ "$win_type" == "GRADUAL" ]]; then
-                    esc_rec="Progresywne throttling (GRADUAL) — latencja rośnie liniowo z kolejnymi próbami (baseline=${baseline}ms, variance=${variance}ms). Wskazuje na token bucket lub leaky bucket rate limiter. Konfiguracja wygląda poprawnie. Upewnij się że authorized scanners mają wyższy rate limit lub są wykluczone."
+                    esc_rec="Progressive throttling (GRADUAL) — latency increases linearly with subsequent probes (baseline=${baseline}ms, variance=${variance}ms). Indicates token bucket or leaky bucket rate limiter. Configuration looks correct. Ensure authorised scanners have higher rate limit or are excluded."
                 elif [[ "$win_type" == "BURSTY" ]]; then
-                    esc_rec="Reakcja burstowa — gwałtowny wzrost latencji przy burst, następnie powrót (return_delta=${return_delta}ms). Wskazuje na connection-rate limiter bez persistent memory. Konfiguracja jest odpowiednia dla mitygacji DDoS ale nie dla advanced persistent threat — rozważ dodanie adaptive memory (fail2ban)."
+                    esc_rec="Burst reaction — sharp latency increase during burst then recovery (return_delta=${return_delta}ms). Indicates connection-rate limiter without persistent memory. Configuration is suitable for DDoS mitigation but not for advanced persistent threat — consider adding adaptive memory (fail2ban)."
                 else
-                    esc_rec="Eskalacja obrony wykryta (RS=${rs}%) ale wzorzec niejasny. Baseline=${baseline}ms, variance=${variance}ms. Sprawdź konfigurację rate-limitera — możliwe niespójne reguły."
+                    esc_rec="Defence escalation detected (RS=${rs}%) but pattern unclear. Baseline=${baseline}ms, variance=${variance}ms. Check rate-limiter configuration — possible inconsistent rules."
                 fi
                 add_net_finding "MEDIUM" "BEHAVIOURAL_ESCALATING"                     "${ip}: Eskalacja obrony — wzorzec=${win_type}, próg N=${ban_probe}, baseline=${baseline}ms"                     "$esc_rec"
                 ;;
 
             REACTIVE)
-                # Reaktywny bez pamięci = prosta warstwa sieciowa
                 local react_rec=""
                 if (( baseline > 500 )); then
-                    react_rec="Host reaktywny z wysoką latencją bazową (${baseline}ms) — może wskazywać na transparentny proxy lub IDS inline. Brak persistent memory oznacza że każda sesja jest oceniana od zera. Dodanie fail2ban lub CrowdSec wzmocniłoby obronę."
+                    react_rec="Reactive host with high baseline latency (${baseline}ms) — may indicate transparent proxy or inline IDS. No persistent memory means each session is assessed from scratch. Adding fail2ban or CrowdSec would strengthen defence."
                 else
-                    react_rec="Prosta ochrona sieciowa — host reaguje na bodziec ale nie zapamiętuje historii prób (baseline=${baseline}ms). To jest poziom minimalny. Zalecenie: wdrożenie fail2ban z ban-time minimum 1h lub CrowdSec z community blocklist."
+                    react_rec="Simple network protection — host reacts to stimulus but does not remember probe history (baseline=${baseline}ms). This is the minimum level. Recommendation: deploy fail2ban with ban-time minimum 1h or CrowdSec with community blocklist."
                 fi
-                add_net_finding "LOW" "BEHAVIOURAL_REACTIVE"                     "${ip}: Host reaktywny bez pamieci (RS=${rs}%, baseline=${baseline}ms, variance=${variance}ms)"                     "$react_rec"
+                add_net_finding "LOW" "BEHAVIOURAL_REACTIVE"                     "${ip}: Reactive host without memory (RS=${rs}%, baseline=${baseline}ms, variance=${variance}ms)"                     "$react_rec"
                 ;;
 
             EXPOSED)
-                # Brak obrony behawioralnej = otwarta ekspozycja
-                add_net_finding "MEDIUM" "BEHAVIOURAL_EXPOSED"                     "${ip}: Brak aktywnej obrony behawioralnej — host otwarty bez widocznego rate-limitera, IDS ani deception"                     "Wdróż minimum: (1) fail2ban z ban-time 1h dla SSH/HTTP, (2) rate limiting na poziomie firewall (iptables -m limit), (3) rozważ CrowdSec jako warstwę kolaboratywnej obrony."
+                add_net_finding "MEDIUM" "BEHAVIOURAL_EXPOSED"                     "${ip}: No active behavioural defence — host open without visible rate-limiter, IDS or deception"                     "Deploy minimum: (1) fail2ban with ban-time 1h for SSH/HTTP, (2) rate limiting at firewall level (iptables -m limit), (3) consider CrowdSec as collaborative defence layer."
                 ;;
 
             SILENT)
-                # DROP policy — brak odpowiedzi
-                add_net_finding "INFO" "BEHAVIOURAL_SILENT"                     "${ip}: Host silent — DROP policy (brak odpowiedzi na wszystkie proby, confidence=${conf}%)"                     "DROP policy jest prawidłowa — host nie ujawnia informacji o stanie portów. Upewnij się że to jest intentional (nie awaria usługi)."
+                add_net_finding "INFO" "BEHAVIOURAL_SILENT"                     "${ip}: Silent host — DROP policy (no response to all probes, confidence=${conf}%)"                     "DROP policy is correct — host discloses no port state information. Ensure this is intentional (not service failure)."
                 ;;
         esac
     done
 
-    # ── GLOBALNA SYNTEZA — wnioski na poziomie sieci ──────────────────────────
     local heat="${SESSION_STATE[heat]:-0}"
     local threat="${SESSION_STATE[threat_level]:-0}"
     local corr="${SESSION_STATE[correlation_score]:-0}"
@@ -9859,71 +8067,60 @@ export_phase_x_findings() {
     local zones_sil="${PHASE_X[zones_silent]:-0}"
     local dynamic_total=$(( zones_adp + zones_esc ))
 
-    # Deception global
     if (( zones_dec > 0 )); then
-        add_net_finding "HIGH" "BEHAVIOURAL_GLOBAL"             "Siec zawiera ${zones_dec} stref deception — aktywna dezinformacja (heat=${heat})"             "Audyt klasyczny jest czesciowo niewiarygodny w tej sieci. Wyniki port scan mogą zawierać false positives z honeypotów. Rekomendacja: zidentyfikuj i wyklucz IP deception systemów z przyszłych audytów."
+        add_net_finding "HIGH" "BEHAVIOURAL_GLOBAL"             "Network contains ${zones_dec} deception zones — active disinformation (heat=${heat})"             "Classical audit is partially unreliable in this network. Port scan results may contain false positives from honeypots. Recommendation: identify and exclude deception system IPs from future audits."
     fi
 
-    # Korelacja global — IDS/NDR
     if (( zones_cor > 0 )); then
-        local ids_rec="Środowisko ma aktywną korelację zdarzeń (${zones_cor} hostów, correlation_score=${corr}). "
+        local ids_rec="Environment has active event correlation (${zones_cor} hosts, correlation_score=${corr}). "
         if (( corr >= 70 )); then
-            ids_rec="${ids_rec}Wysoki score sugeruje dojrzałą korelację sieciową klasy enterprise. Footprint audytora jest w pełni rejestrowany. Następny krok: ogranicz walidację do zakresu pasywnego i uzgodnij ją z właścicielem środowiska."
+            ids_rec="${ids_rec}High score suggests mature enterprise-grade network correlation. Auditor footprint is fully recorded. Next step: limit validation to passive scope and agree with environment owner."
         else
-            ids_rec="${ids_rec}Umiarkowany score sugeruje IDS z regułami korelacyjnymi. Sprawdź czy reguły THRESHOLD są właściwie skalibrowane — zbyt niski próg generuje alert-fatigue."
+            ids_rec="${ids_rec}Moderate score suggests IDS with correlation rules. Check that THRESHOLD rules are properly calibrated — too low a threshold generates alert-fatigue."
         fi
-        add_net_finding "HIGH" "BEHAVIOURAL_GLOBAL"             "Korelacja zdarzen aktywna: ${zones_cor} hostow, score=${corr}%, adaptation=${adapt}"             "$ids_rec"
+        add_net_finding "HIGH" "BEHAVIOURAL_GLOBAL"             "Event correlation active: ${zones_cor} hosts, score=${corr}%, adaptation=${adapt}"             "$ids_rec"
     fi
 
-    # Adaptive/Escalating global — próg blokady
     if (( dynamic_total >= 2 )); then
-        local dyn_rec="Dynamiczna obrona: ${zones_adp} hostow adaptive + ${zones_esc} escalating. "
+        local dyn_rec="Dynamic defence: ${zones_adp} adaptive hosts + ${zones_esc} escalating hosts. "
         if (( esc_thresh > 0 && esc_thresh <= 3 )); then
-            dyn_rec="${dyn_rec}KRYTYCZNE: próg blokady N=${esc_thresh} jest bardzo agresywny — authorized skanery wewnętrzne (Qualys, Tenable, Nessus) będą blokowane po ${esc_thresh} próbach. Dodaj podsieci skanerów do whitelist IDS/fail2ban."
+            dyn_rec="${dyn_rec}CRITICAL: ban threshold N=${esc_thresh} is very aggressive — authorised internal scanners (Qualys, Tenable, Nessus) will be blocked after ${esc_thresh} probes. Add scanner subnets to IDS/fail2ban whitelist."
         elif (( esc_thresh > 0 && esc_thresh <= 7 )); then
-            dyn_rec="${dyn_rec}Próg blokady N=${esc_thresh} — akceptowalny dla środowiska produkcyjnego. Upewnij się że IP skanerów autoryzowanych są wykluczone z tego progu."
+            dyn_rec="${dyn_rec}Ban threshold N=${esc_thresh} — acceptable for production environment. Ensure authorised scanner IPs are excluded from this threshold."
         elif (( esc_thresh > 7 )); then
-            dyn_rec="${dyn_rec}Próg blokady N=${esc_thresh} — może być zbyt liberalny dla środowisk high-security. Rozważ obniżenie do 5 przy jednoczesnym wdrożeniu IP whitelist dla skanerów."
+            dyn_rec="${dyn_rec}Ban threshold N=${esc_thresh} may be too permissive for high-security environments. Consider reducing it to 5 while maintaining explicit scanner IP whitelisting."
         else
-            dyn_rec="${dyn_rec}Klasyczny audyt sekwencyjny jest nieskuteczny w tej sieci. Wymagana strategia low-noise z adaptacyjnym jitterem (--jitter 1500+)."
+            dyn_rec="${dyn_rec}Classic sequential auditing is ineffective in this network. A low-noise strategy with adaptive jitter is required."
         fi
-        add_net_finding "HIGH" "BEHAVIOURAL_GLOBAL"             "Dynamiczna eskalacja obrony: adaptive=${zones_adp} escalating=${zones_esc} próg=${esc_thresh} threat=${threat}"             "$dyn_rec"
+        add_net_finding "HIGH" "BEHAVIOURAL_GLOBAL"             "Dynamic defence escalation: adaptive=${zones_adp} escalating=${zones_esc} threshold=${esc_thresh} threat=${threat}"             "$dyn_rec"
     fi
 
-    # Exposed global — brak obrony behawioralnej
     if (( zones_exp >= 3 )); then
-        add_net_finding "HIGH" "BEHAVIOURAL_GLOBAL"             "${zones_exp} hostów bez widocznej obrony behawioralnej — flat exposure surface"             "Znaczna część sieci nie ma dynamicznej obrony. Wdróż centralny rate-limiting i IDS. Priorytet: hosty z otwartymi portami zarządzania (SSH/RDP/WinRM)."
+        add_net_finding "HIGH" "BEHAVIOURAL_GLOBAL"             "${zones_exp} hosts without visible behavioural defence — flat exposure surface"             "A significant portion of the network lacks visible dynamic defence. Deploy central rate-limiting and IDS controls. Prioritise hosts with exposed management ports (SSH/RDP/WinRM)."
     fi
 
-    # Heat level synthesis
     if (( heat >= 70 )); then
-        add_net_finding "HIGH" "BEHAVIOURAL_GLOBAL"             "Wysoki poziom heat sieci (${heat}/100) — siec w stanie podwyższonej gotowości przez cały audyt"             "Audyt wygenerował znaczący ruch detekcyjny. SOC mógł zarejestrować anomalię. Przy następnym audycie: użyj --mode passive dla fazy recon, aktywny skan tylko dla potwierdzonych hostów."
+        add_net_finding "HIGH" "BEHAVIOURAL_GLOBAL"             "High network heat level (${heat}/100) — the environment remained in elevated defensive posture throughout the audit"             "Audit generated significant detection traffic. SOC may have registered anomaly. Next audit: use --mode passive for recon phase, active scan only for confirmed hosts."
     fi
 
-    # Całościowa ocena posture
     local posture_rec=""
     if (( zones_dec > 0 && zones_cor > 0 && dynamic_total > 0 )); then
-        posture_rec="DOJRZAŁA OBRONA: sieć ma warstwę deception, korelację i dynamiczny rate-limiting. To jest defense-in-depth. Główne zalecenie: upewnij się że whitelist autoryzowanych skanerów jest aktualna we wszystkich warstwach."
+        posture_rec="MATURE DEFENCE: network has deception layer, correlation and dynamic rate-limiting. This is defence-in-depth. Main recommendation: ensure authorised scanner whitelist is current across all layers."
     elif (( zones_cor > 0 || dynamic_total >= 2 )); then
         local posture_missing=()
         (( zones_dec == 0 )) && posture_missing+=("deception")
         (( zones_sil == 0 )) && posture_missing+=("stealth policy")
         if [[ ${#posture_missing[@]} -gt 0 ]]; then
-            posture_rec="ŚREDNIA DOJRZAŁOŚĆ: aktywna detekcja ale niepełna. Brakujące warstwy: $(IFS=', '; echo "${posture_missing[*]}")."
+            posture_rec="MEDIUM MATURITY: active detection but incomplete. Missing layers: $(IFS=', '; echo "${posture_missing[*]}")."
         else
-            posture_rec="ŚREDNIA DOJRZAŁOŚĆ: aktywna detekcja ale niepełna. Wymaga dalszego utwardzenia segmentacji i polityk ograniczających widoczność."
+            posture_rec="MEDIUM MATURITY: active detection but incomplete. Requires further segmentation hardening and visibility-restricting policies."
         fi
     elif (( zones_exp > 0 )); then
-        posture_rec="NISKA DOJRZAŁOŚĆ: dominuje ekspozycja bez obrony dynamicznej. Priorytet: wdrożenie kontroli reaktywnych, limitowania ruchu i centralnej telemetrii jako minimalnego baseline’u."
+        posture_rec="LOW MATURITY: exposure dominates without dynamic defence. Priority: deploy reactive controls, traffic limiting, and central telemetry as minimum baseline."
     fi
-    [[ -n "$posture_rec" ]] && add_net_finding "INFO" "BEHAVIOURAL_POSTURE"         "Ocena posture behawioralnej: deception=${zones_dec} correlated=${zones_cor} adaptive=${zones_adp} escalating=${zones_esc} exposed=${zones_exp} silent=${zones_sil}"         "$posture_rec"
+        posture_rec="LOW MATURITY: exposure dominates without dynamic defence. Priority: deploy reactive controls, traffic limiting, and central telemetry as minimum baseline."
 }
 
-# END FAZA X
-
-
-###############################################################################
-###############################################################################
 _port_fingerprint() {
     local ip="$1"
     local port="$2"
@@ -9952,7 +8149,6 @@ _port_fingerprint() {
 _is_fake_port() {
     local ip="$1"
     local port="$2"
-    # nie filtrujemy standardowych portów
     case " $port " in
         *" 22 "*|*" 80 "*|*" 443 "*|*" 53 "*|*" 445 "*|*" 3389 "*|*" 139 "*|*" 135 "*)
             return 1
@@ -9964,11 +8160,9 @@ _is_fake_port() {
     r1="${fp#*|}"; r1="${r1%%|*}"
     r2="${fp##*|}"
     [[ "$ms" =~ ^[0-9]+$ ]] || ms=9999
-    # szybki accept + brak odpowiedzi = fake listener
     if (( ms <= 15 )) && [[ -z "$r1" && -z "$r2" ]]; then
         return 0
     fi
-    # identyczna odpowiedź na różne dane
     if (( ms <= 40 )) && [[ -n "$r1" && "$r1" == "$r2" ]]; then
         case "$r1" in
             OK|ok|HELLO|hello|READY|ready|"")
@@ -9976,7 +8170,6 @@ _is_fake_port() {
                 ;;
         esac
     fi
-    # zakres mirage 8000–9999
     if (( port >= 8000 && port <= 9999 )) && (( ms <= 40 )) && [[ -z "$r1" && -z "$r2" ]]; then
         return 0
     fi
@@ -9997,11 +8190,7 @@ filter_false_ports() {
     done
     echo "${clean# }|${fake# }"
 }
-###############################################################################
-###############################################################################
 
-###############################################################################
-###############################################################################
 : "${G_TIMEOUT:=2}"
 : "${G_RETRY:=2}"
 : "${G_DELAY:=1}"
@@ -10076,42 +8265,20 @@ g_visibility_score() {
     [[ "$total" -eq 0 ]] && { echo 0; return; }
     echo $((visible*100/total))
 }
-# FAZA X — BEHAVIOURAL RECON ENGINE
-#
-# Metrics: Reactivity Score | Adaptivity Index | Deception Score
-#          Correlation Window | Noise Tolerance | Escalation Threshold
 
+declare -A BH=()
+declare -a BH_EVENTS=()
+declare -A BMAP=()
+declare -A PHASE_X=()      
+_BH_RET=""
 
-declare -A BH=()          # dane behawioralne per host:port:metryka
-declare -a BH_EVENTS=()   # log zdarzen z timestamps — pamiec silnika
-declare -A BMAP=()         # mapa behawioralna — strefy per host
-declare -A PHASE_X=()      # wyniki globalne
-_BH_RET=""                  # zwrot funkcji BH (bez subshell)
-
-# Strefy mapy:
-#   SILENT      — brak reakcji, host pasywny lub za glebokim DROP
-#   REACTIVE    — zachowanie zmienia sie po bodźcu
-#   DECEPTION   — sygnały warstwy deception / tarpit / fake listener
-#   CORRELATED  — system koreluje zdarzenia miedzy portami
-#   ESCALATING  — obrona rośnie z każdą próbą
-#   ADAPTIVE    — obrona uczy sie wzorca i odpowiada inaczej
-#   EXPOSED     — otwarty bez aktywnej obrony
-#   UNKNOWN     — za malo danych
-
-
-: "${BH_BUDGET:=150}"       # calkowity budżet prób (każda próba kosztuje 1)
-: "${BH_JITTER_MAX:=900}"   # max jitter ms miedzy próbami
+: "${BH_BUDGET:=150}"
+: "${BH_JITTER_MAX:=900}"
 : "${BH_JITTER_MIN:=80}"    # min jitter
-: "${BH_BURST_SIZE:=5}"     # rozmiar burstu w tescie reaktywności
-: "${BH_COOLDOWN:=3}"       # sekundy cooldown po burście
-: "${BH_BASELINE_N:=3}"     # ilość próbek do baseline
-: "${BH_PROBE_TIMEOUT:=2}"  # timeout pojedynczej próby (s)
-
-
-
-# [PRE] East-West reachability (pre-scan)
-# Minimal, sensory-only probe that does NOT depend on port-scan results.
-# It samples a few host pairs and probes common east-west ports to estimate segmentation.
+: "${BH_BURST_SIZE:=5}"     # burst size for reactivity test
+: "${BH_COOLDOWN:=3}"       # seconds cooldown after burst
+: "${BH_BASELINE_N:=3}"     # number of probes for baseline
+: "${BH_PROBE_TIMEOUT:=2}"  # timeout pojedynczej probesy (s)
 
 audit_east_west_pre() {
     log "[PRE] East-West reachability (sensory)" "SECTION"
@@ -10124,7 +8291,7 @@ audit_east_west_pre() {
         [[ -z "$dst" ]] && continue
         for p in $ports; do
             state=$(g_tcp_probe "$dst" "$p" 1)
-            [[ "$state" == "open" || "$state" == "closed" ]] && { (( hits++ )); break; }
+            [[ "$state" == "OPEN" || "$state" == "CLOSED" ]] && { (( hits++ )); break; }
         done
         (( samples++ ))
     done
@@ -10144,8 +8311,225 @@ audit_east_west_pre() {
     fi
 }
 
+declare -A SCANNERS=(
+    [nmap]="" [nessus]="" [openvas]="" [qualys]="" [masscan]=""
+    [zmap]="" [burpsuite]="" [amass]="" [nikto]="" [gobuster]=""
+    [intruder]="" [wireshark]="" [metasploit]="" [nessus_api]=""
+)
 
-# NOWY MAIN — PETLA ZAMIAST PIPELINE
+_detect_scanners() {
+    local tool
+    for tool in nmap masscan zmap amass nikto gobuster; do
+        command -v "$tool" &>/dev/null && SCANNERS[$tool]="$tool"
+    done
+    [[ -x /opt/nessus/sbin/nessusd ]] && SCANNERS[nessus]="/opt/nessus/sbin/nessusd"
+    [[ -x /usr/sbin/openvas-scanner ]] && SCANNERS[openvas]="/usr/sbin/openvas-scanner"
+    command -v gvm-cli &>/dev/null && SCANNERS[openvas]="gvm-cli"
+    command -v tshark &>/dev/null && SCANNERS[wireshark]="tshark"
+    command -v msfconsole &>/dev/null && SCANNERS[metasploit]="msfconsole"
+    [[ -n "${NESSUS_API_URL:-}" ]] && SCANNERS[nessus_api]="${NESSUS_API_URL}"
+    [[ -n "${QUALYS_API_URL:-}" ]] && SCANNERS[qualys]="${QUALYS_API_URL}"
+    [[ -n "${INTRUDER_API_KEY:-}" ]] && SCANNERS[intruder]="api"
+    [[ -n "${BURP_API_URL:-}" ]] && SCANNERS[burpsuite]="${BURP_API_URL}"
+    local detected=""
+    for tool in "${!SCANNERS[@]}"; do
+        [[ -n "${SCANNERS[$tool]}" ]] && detected="$detected $tool"
+    done
+    log "Scanners detected:${detected:- none}" "INFO"
+}
+
+run_masscan_discovery() {
+    [[ -z "${SCANNERS[masscan]}" ]] && return 0
+    [[ "${T[is_root]}" != "1" ]] && return 0
+    log "[MASSCAN] Fast port discovery" "SECTION"
+    local subnet ports_csv
+    for subnet in "${SUBNETS[@]}"; do
+        ports_csv="21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,1433,1521,2049,3306,3389,5432,5900,6379,8080,8443,9200,27017"
+        local masscan_out
+        masscan_out=$(timeout 120 masscan "$subnet" -p "$ports_csv" --rate=1000 --wait=3 2>/dev/null || true)
+        while read -r line; do
+            local mip mport
+            mip=$(echo "$line" | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1)
+            mport=$(echo "$line" | grep -oP 'port \K\d+' | head -1)
+            [[ -z "$mip" || -z "$mport" ]] && continue
+            _is_excluded_ip "$mip" && continue
+            local existing="${RAW_PORTS[$mip]:-}"
+            if [[ -z "$existing" ]] || ! echo " $existing " | grep -qw "$mport"; then
+                _safe_set RAW_PORTS "$mip" "${existing:+$existing }$mport"
+            fi
+        done <<< "$masscan_out"
+    done
+}
+
+run_zmap_discovery() {
+    [[ -z "${SCANNERS[zmap]}" ]] && return 0
+    [[ "${T[is_root]}" != "1" ]] && return 0
+    log "[ZMAP] Fast single-port sweep" "SECTION"
+    local subnet
+    for subnet in "${SUBNETS[@]}"; do
+        for zport in 80 443 22; do
+            local zmap_out
+            zmap_out=$(timeout 60 zmap -p "$zport" "$subnet" -B 1M -q 2>/dev/null || true)
+            while read -r zip; do
+                _is_ipv4 "$zip" || continue
+                _is_excluded_ip "$zip" && continue
+                local existing="${RAW_PORTS[$zip]:-}"
+                if [[ -z "$existing" ]] || ! echo " $existing " | grep -qw "$zport"; then
+                    _safe_set RAW_PORTS "$zip" "${existing:+$existing }$zport"
+                fi
+            done <<< "$zmap_out"
+        done
+    done
+}
+
+run_amass_enum() {
+    [[ -z "${SCANNERS[amass]}" ]] && return 0
+    [[ "${ENABLE_WAN_DISCOVERY:-0}" != "1" ]] && return 0
+    log "[AMASS] Attack surface discovery" "SECTION"
+    local domain="${CLIENT_NAME,,}"
+    [[ "$domain" == "enterprise" ]] && return 0
+    local amass_out
+    amass_out=$(timeout 300 amass enum -passive -d "$domain" 2>/dev/null || true)
+    local count
+    count=$(echo "$amass_out" | wc -l)
+    log "  [AMASS] Discovered $count subdomains for $domain" "INFO"
+    _report_finding "ATTACK_SURFACE_DISCOVERY" "CONFIRMED" 60 \
+        "amass found ${count} subdomains" "run_amass_enum"
+}
+
+run_nikto_scan() {
+    [[ -z "${SCANNERS[nikto]}" ]] && return 0
+    [[ "$MODE" == "passive" ]] && return 0
+    log "[NIKTO] Web server scanning" "SECTION"
+    local idx ip ports
+    for (( idx=0; idx<DEV_COUNT; idx++ )); do
+        ip="${D_IP[$idx]}"
+        ports="$(_safe_get RAW_PORTS "$ip")"
+        for p in 80 443 8080 8443; do
+            echo " $ports " | grep -qw "$p" || continue
+            local proto="http"; [[ "$p" == "443" || "$p" == "8443" ]] && proto="https"
+            local nikto_out
+            nikto_out=$(timeout 120 nikto -h "${proto}://${ip}:${p}" -maxtime 90 -nointeractive 2>/dev/null || true)
+            local vulns
+            vulns=$(echo "$nikto_out" | grep -cE '^\+' || echo "0")
+            if (( vulns > 0 )); then
+                add_finding "$idx" "MEDIUM" "WEB_VULNS" \
+                    "Nikto found $vulns items on ${ip}:${p}" \
+                    "Review nikto output and remediate findings"
+            fi
+            break
+        done
+    done
+}
+
+run_gobuster_scan() {
+    [[ -z "${SCANNERS[gobuster]}" ]] && return 0
+    [[ "$MODE" == "passive" ]] && return 0
+    log "[GOBUSTER] Directory brute-force" "SECTION"
+    local wordlist="/usr/share/wordlists/dirb/common.txt"
+    [[ -f "$wordlist" ]] || wordlist="/usr/share/seclists/Discovery/Web-Content/common.txt"
+    [[ -f "$wordlist" ]] || return 0
+    local idx ip ports
+    for (( idx=0; idx<DEV_COUNT; idx++ )); do
+        ip="${D_IP[$idx]}"
+        ports="$(_safe_get RAW_PORTS "$ip")"
+        for p in 80 443 8080; do
+            echo " $ports " | grep -qw "$p" || continue
+            local proto="http"; [[ "$p" == "443" ]] && proto="https"
+            local gb_out
+            gb_out=$(timeout 120 gobuster dir -u "${proto}://${ip}:${p}" -w "$wordlist" -q -t 10 --no-error 2>/dev/null || true)
+            local found
+            found=$(echo "$gb_out" | grep -cE 'Status: (200|301|302|403)' || echo "0")
+            if (( found > 5 )); then
+                add_finding "$idx" "INFO" "WEB_DIRS" \
+                    "Gobuster found $found directories on ${ip}:${p}" \
+                    "Review exposed directories for sensitive content"
+            fi
+            break
+        done
+    done
+}
+
+run_nessus_import() {
+    [[ -z "${SCANNERS[nessus_api]}" ]] && return 0
+    log "[NESSUS] Importing vulnerability data via API" "SECTION"
+    local nessus_url="${SCANNERS[nessus_api]}"
+    local nessus_token="${NESSUS_API_TOKEN:-}"
+    [[ -z "$nessus_token" ]] && { log "  [NESSUS] No API token (NESSUS_API_TOKEN)" "WARN"; return 0; }
+    local scans_json
+    scans_json=$(curl -sk --max-time 10 -H "X-ApiKeys: accessKey=${nessus_token}" \
+        "${nessus_url}/scans" 2>/dev/null || echo "")
+    if echo "$scans_json" | grep -q '"scans"'; then
+        local scan_count
+        scan_count=$(echo "$scans_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('scans',[])))" 2>/dev/null || echo "0")
+        _report_finding "NESSUS_INTEGRATION" "CONFIRMED" 70 \
+            "nessus connected, ${scan_count} scans available" "run_nessus_import"
+        log "  [NESSUS] Connected: $scan_count scans available" "OK"
+    else
+        log "  [NESSUS] API unreachable or auth failed" "WARN"
+    fi
+}
+
+run_openvas_import() {
+    [[ -z "${SCANNERS[openvas]}" ]] && return 0
+    log "[OPENVAS] Checking vulnerability scanner" "SECTION"
+    if command -v gvm-cli &>/dev/null; then
+        local gvm_ver
+        gvm_ver=$(gvm-cli --version 2>/dev/null | head -1 || echo "unknown")
+        log "  [OPENVAS] GVM CLI: $gvm_ver" "INFO"
+        _report_finding "OPENVAS_INTEGRATION" "CONFIRMED" 55 \
+            "OpenVAS/GVM available: ${gvm_ver}" "run_openvas_import"
+    elif [[ -x /usr/sbin/openvas-scanner ]]; then
+        log "  [OPENVAS] Scanner binary found" "INFO"
+        _report_finding "OPENVAS_INTEGRATION" "CONFIRMED" 50 \
+            "OpenVAS scanner binary present" "run_openvas_import"
+    fi
+}
+
+run_qualys_import() {
+    [[ -z "${SCANNERS[qualys]}" ]] && return 0
+    log "[QUALYS] Checking cloud scanner API" "SECTION"
+    local qualys_url="${SCANNERS[qualys]}"
+    local qualys_user="${QUALYS_API_USER:-}"
+    local qualys_pass="${QUALYS_API_PASS:-}"
+    [[ -z "$qualys_user" || -z "$qualys_pass" ]] && {
+        log "  [QUALYS] Missing credentials (QUALYS_API_USER/QUALYS_API_PASS)" "WARN"
+        return 0
+    }
+    local resp
+    resp=$(curl -sk --max-time 10 -u "${qualys_user}:${qualys_pass}" \
+        "${qualys_url}/api/2.0/fo/scan/?action=list" 2>/dev/null || echo "")
+    if echo "$resp" | grep -qi "scan_list\|SCAN"; then
+        _report_finding "QUALYS_INTEGRATION" "CONFIRMED" 65 \
+            "Qualys API connected" "run_qualys_import"
+        log "  [QUALYS] API connected" "OK"
+    fi
+}
+
+run_scanner_integrations() {
+    _detect_scanners
+    run_masscan_discovery
+    run_zmap_discovery
+    run_amass_enum
+    run_nessus_import
+    run_openvas_import
+    run_qualys_import
+    if [[ "$MODE" != "passive" ]]; then
+        run_nikto_scan
+        run_gobuster_scan
+    fi
+}
+
+_copy_reports_to_destinations() {
+    local dest
+    for dest in "/root/EWNAF-Reports" "${REAL_HOME}/EWNAF-Reports"; do
+        [[ "$dest" == "$OUTPUT_ROOT" ]] && continue
+        mkdir -p "$dest" 2>/dev/null || continue
+        cp -r "$OUTPUT_PATH" "$dest/" 2>/dev/null || true
+        chown -R "${REAL_USER}:${REAL_USER}" "$dest" 2>/dev/null || true
+        log "Reports copied to: $dest/$TIMESTAMP" "INFO"
+    done
+}
 
 log "$(L start "${VERSION}" "${CLIENT_NAME}" "${MODE}")" "SECTION"
 
@@ -10156,61 +8540,47 @@ if ! discover_infrastructure; then
     export_json
     export_html
     export_pdf
-    [[ $QUIET -eq 0 ]] && print_summary
+    _emit_report_paths
     exit 0
 fi
 
-# 1 — L2
 audit_layer2
 
-# 2 — Host discovery
 discover_hosts
 
-# 2.5 — Gentle topology validation (nmap-assisted corroboration)
 topology_nmap_assist
 
-# Guard
+run_scanner_integrations
+
 if (( DEV_COUNT == 0 )); then
     AUDIT_STATUS="${AUDIT_STATUS:-NO_HOSTS}"
     [[ "$AUDIT_STATUS" == "READY" ]] && AUDIT_STATUS="NO_HOSTS"
-    ewnaf_miniserver_event "audit_status" "NO_HOSTS" "Brak aktywnych hostów"
+    ewnaf_miniserver_event "audit_status" "NO_HOSTS" "No active hosts"
     AUDIT_NOTE="$(L no_hosts)"
     log "$AUDIT_NOTE" "WARN"
     _finalize_no_evidence_report
     export_json
     export_html
     export_pdf
-    [[ $QUIET -eq 0 ]] && print_summary
+    _emit_report_paths
     exit 0
 fi
 
-# 3 — L3 segmentation
 audit_layer3
 
-# 4 — DNS filtering (sensory, before interpretation)
 audit_dns
 
-# 5 — WAN/NAT + Egress (sensory)
 audit_egress
 audit_wan
 
-# 6 — Traffic policy (burst/IDS) (sensory)
 audit_traffic_policy
 
-# 7 — Firewall DROP/RST fingerprint (sensory, must be before portscan interpretation)
 audit_firewall
 
-# 8 — East-West reachability (pre-scan proxy)
 audit_east_west_pre
 
-# FREEZE CONTEXT (COLLECT → FREEZE → CLASSIFY)
 freeze_context
 
-# NET-AUDIT: Badamy SIEĆ, nie usługi
-# Wyłączone: port scan, banner grab, classify, TLS, UDP, AD, lateral, fleet, prowler
-# Audyt sam odkrywa co jest w sieci przez topologię i heurystykę — zero palcowania
-
-# Commit DNS i Egress z już zebranych danych
 if [[ "$(_safe_get RAW_DNS_AUDIT dns_leak)" == "1" ]]; then
     TRAFFIC_POLICY[dns_leak]=1
 fi
@@ -10218,8 +8588,6 @@ if [[ "$(_safe_get RAW_EGRESS http_egress_blocked)" == "1" ]]; then
     TRAFFIC_POLICY[http_egress_blocked]=1
 fi
 
-# --- NOWY RDZEN: petla eksploracyjna zastepuje statyczna analize ---
-# Zbieramy liste IP wszystkich odkrytych hostow z wykluczeniem lokalnego środowiska wykonawczego
 declare -a EXPLORATION_TARGETS=()
 declare -a PHASE_X_TARGETS=()
 for (( _xi=0; _xi<DEV_COUNT; _xi++ )); do
@@ -10230,12 +8598,8 @@ for (( _xi=0; _xi<DEV_COUNT; _xi++ )); do
     PHASE_X_TARGETS+=("$_ip")
 done
 
-# v36.6 passive hardening:
-# - lokalne IP audytora, brama runnera oraz WAN nie trafiają do eksploracji
-# - PASSIVE_ONLY=1 domyślnie wyłącza aktywną pętlę eksploracyjną i Fazę X
-
-if [[ "${PASSIVE_ONLY:-1}" == "1" ]]; then
-    log "PASSIVE_ONLY=1 — pomijam aktywną pętlę eksploracyjną i Fazę X" "INFO"
+if [[ "${PASSIVE_ONLY:-1}" == "1" || "$MODE" == "passive" ]]; then
+    log "PASSIVE_ONLY=1 — skipping active exploration loop and Phase X" "INFO"
 else
     run_exploration_loop "${EXPLORATION_TARGETS[@]}"
     if (( ${#PHASE_X_TARGETS[@]} > 0 )) && [[ "${SESSION_STATE[phase_x_done]:-0}" != "1" ]]; then
@@ -10244,57 +8608,43 @@ else
     fi
 fi
 
-
-# ═══════════════════════════════════════════════════════════════
-# finalize_net_findings() — zamienia wykryte stany na findings
-# Model generyczny — zero hardcoded nazw produktów/IP
-# Raportuje KLASY ZACHOWAŃ, nie listę produktów
-# Zasada: brak dowodu ≠ brak zabezpieczenia
-# ═══════════════════════════════════════════════════════════════
-
 finalize_net_findings() {
     NET_FINDINGS=()
 
-    # Tłumaczenie findings ze statusami na legacy NET_FINDINGS + coverage
     local row klass status conf evidence tested_by sev rec
     local IFS_OLD="$IFS"
     for row in "${AUDIT_FINDINGS[@]:-}"; do
         [[ -z "$row" ]] && continue
         IFS=$'\x01' read -r klass status conf evidence tested_by <<< "$row"
-        sev="INFO"; rec="Zweryfikuj kontekst i utrzymaj bezpieczny, kontrolowany zakres testów."
+        sev="INFO"; rec="Verify context and maintain safe, controlled test scope."
         case "$status" in
-            ABSENT) sev="HIGH"; rec="Wprowadź kontrolę lub egzekwowanie polityki dla tej klasy ruchu." ;;
-            NOT_DETECTED) sev="MEDIUM"; rec="Skuteczność nie została potwierdzona. Rozszerz walidację lub telemetrię." ;;
-            CONFIRMED) sev="LOW"; rec="Kontrola została zaobserwowana. Monitoruj regresję i utrzymuj coverage." ;;
-            NOT_TESTED) sev="INFO"; rec="Test pominięty lub niedostępny. Uzupełnij brakujące narzędzie albo okno testowe." ;;
+            ABSENT) sev="HIGH"; rec="Implement control or policy enforcement for this traffic class." ;;
+            NOT_DETECTED) sev="MEDIUM"; rec="Effectiveness not confirmed. Extend validation or telemetry." ;;
+            CONFIRMED) sev="LOW"; rec="Control observed. Monitor regression and maintain coverage." ;;
+            NOT_TESTED) sev="INFO"; rec="Test skipped or unavailable. Add missing tool or test window." ;;
         esac
         add_net_finding "$sev" "$klass" "status=${status}; confidence=${conf}; evidence=${evidence}; tested_by=${tested_by}" "$rec"
     done
     IFS="$IFS_OLD"
 
-    # Wnioski syntetyczne dla polityki ruchu
     if [[ "${TRAFFIC_POLICY[east_west_isolated]:-0}" == "1" ]]; then
-        add_net_finding "LOW" "SEGMENTATION" "Segmentacja east-west wykazuje sygnał izolacji." "Utrzymaj politykę ACL i waliduj regresje po zmianach."
+        add_net_finding "LOW" "SEGMENTATION" "East-west segmentation shows isolation signal." "Maintain ACL policy and validate regressions after changes."
     fi
     if [[ "${TRAFFIC_POLICY[http_egress_blocked]:-0}" == "1" ]]; then
-        add_net_finding "LOW" "EGRESS" "Ruch HTTP bez szyfrowania jest ograniczony." "Utrzymaj wymuszenie szyfrowania i kontrolę wyjścia."
+        add_net_finding "LOW" "EGRESS" "Unencrypted HTTP traffic is restricted." "Maintain encryption enforcement and egress control."
     fi
 
     _coverage_summary
 }
 
-
-# --- Finalizacja findings (stany→raport) ---
 finalize_net_findings
 
-# --- Scoring i raporty ---
 log "$(L scoring)" "SECTION"
 for (( i=0; i<DEV_COUNT; i++ )); do map_compliance "$i"; done
 build_attack_path
 build_remediation_roadmap
 build_executive
 
-# Wzbogac executive o dane behawioralne z sesji
 EXEC_BH_THREAT="${SESSION_STATE[threat_level]}"
 EXEC_BH_CORRELATION="${SESSION_STATE[correlation_score]}"
 EXEC_BH_DECEPTION="${SESSION_STATE[deception_score]}"
@@ -10304,14 +8654,10 @@ export_json
 export_html
 export_pdf
 
-[[ $QUIET -eq 0 ]] && print_summary
+_copy_reports_to_destinations
+_emit_report_paths
 
 if [[ "${PROWLER_RESULT[scan_started]:-0}" == "1" ]]; then
-    echo ""
-    echo -e "${CM}[PROWLER]${CN} AWS scan dziala w tle (PID: ${PROWLER_RESULT[scan_pid]:-?})"
-    echo -e "${CD}  Monitor : tail -f ${PROWLER_RESULT[report_dir]:-}/prowler-aws.log${CN}"
-    echo -e "${CD}  Raport  : ${PROWLER_RESULT[report_dir]:-}/aws/${CN}"
+    log "Prowler AWS scan running (PID: ${PROWLER_RESULT[scan_pid]:-?})" "INFO"
 fi
-
-log "Audyt zakonczony. Threat=${SESSION_STATE[threat_level]} Correlation=${SESSION_STATE[correlation_score]} Probes=${SESSION_STATE[total_probes]}"
 
