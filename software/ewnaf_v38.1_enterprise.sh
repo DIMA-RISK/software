@@ -5641,7 +5641,7 @@ footer{background:var(--s);border-top:1px solid var(--b);padding:16px 40px;text-
     <h3 style="color:${sc}">$(html_esc "$verdict_detail") / $(html_esc "$verdict_en")</h3>
     <p>$(html_esc "$tier")</p>
     <p style="margin-top:6px;font-size:.72rem;color:var(--m)">
-      Ryzyko rezydualne / Residual Risk = Ryzyko surowe − Mitigacje &nbsp;|&nbsp;
+      Ryzyko rezydualne / Residual Risk = Ryzyko surowe - Mitigacje &nbsp;|&nbsp;
       Results cover ${DEV_COUNT} hosts, ${#NET_FINDINGS[@]} network findings
     </p>
   </div>
@@ -5761,7 +5761,7 @@ footer{background:var(--s);border-top:1px solid var(--b);padding:16px 40px;text-
 <div class="card">
   <h3>Methodology</h3>
   <p style="color:var(--m);font-size:.78rem;margin-top:6px">
-    Final score computed as <code>Residual Risk = Raw Risk (weight × vulnerability) − Mitigations (detected defences)</code>.
+    Final score computed as <code>Residual Risk = Raw Risk (weight × vulnerability) - Mitigations (detected defences)</code>.
     Behavioural phase (Phase X) assesses network reactivity: measures latency shifts, defence escalation, deception layers, state memory, and cross-host correlation.
   </p>
 </div>
@@ -6601,7 +6601,7 @@ story.append(HRFlowable(width="100%", thickness=0.5, color=C_BORDER))
 story.append(Spacer(1, 0.2*cm))
 
 story.append(Paragraph(
-    ""Final score is computed as Residual Risk = Raw Risk − Mitigations. 
+    ""Final score is computed as Residual Risk = Raw Risk - Mitigations. 
    Behavioural phase (Phase X) evaluates defence dynamics: latency shifts, 
    escalation, deception layers, and cross-host correlation. Results remain independent of 
    specific security products.",
