@@ -6601,10 +6601,10 @@ story.append(HRFlowable(width="100%", thickness=0.5, color=C_BORDER))
 story.append(Spacer(1, 0.2*cm))
 
 story.append(Paragraph(
-    ""Final score is computed as Residual Risk = Raw Risk − Mitigations. 
-   Behavioural phase (Phase X) evaluates defence dynamics: latency shifts, 
-   escalation, deception layers, and cross-host correlation. Results remain independent of 
-   specific security products.",
+    """Final score is computed as Residual Risk = Raw Risk - Mitigations.
+Behavioural phase (Phase X) evaluates defence dynamics: latency shifts,
+escalation, deception layers, and cross-host correlation. Results remain independent of
+specific security products.""",
     sBilingual))
 story.append(Paragraph(
     "Phase X assesses network defence dynamics: "
