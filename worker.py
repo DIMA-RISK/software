@@ -181,10 +181,15 @@ def run_script(job: Dict[str, Any]) -> str:
 
 
 def load_report_json(job_dir: str) -> Dict[str, Any]:
-    json_path = os.path.join(job_dir, "EWNAF-REPORT.json")
+    job_path = Path(job_dir)
 
-    if not os.path.exists(json_path):
-        raise FileNotFoundError(f"JSON report not found: {json_path}")
+    matches = sorted(job_path.rglob("EWNAF-REPORT.json"))
+
+    if not matches:
+        raise FileNotFoundError(f"JSON report not found under: {job_dir}")
+
+    json_path = matches[-1]  # latest one
+    print(f"[INFO] Using JSON report: {json_path}")
 
     with open(json_path, "r", encoding="utf-8") as f:
         return json.load(f)
